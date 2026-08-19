@@ -147,7 +147,7 @@ with st.sidebar:
     st.divider()
 
     # Refresh
-    if st.button("🔄 Refresh Data", use_container_width=True):
+    if st.button("🔄 Refresh Data", width='stretch'):
         with st.spinner("Running BOM ingestion..."):
             try:
                 from ingestion.bom import fetch_all_stations, get_station_coords
@@ -237,7 +237,8 @@ with st.sidebar:
 
     chart_type = st.radio(
         "Chart Type",
-        ["Bar", "Horizontal Bar", "Line", "Scatter"],
+        ["Bar", "Horizontal Bar", "Line", "Scatter", "Box", "Violin",
+         "Radar", "Heatmap", "Bubble"],
     )
 
 
@@ -381,13 +382,189 @@ with tab1:
                         "station_name": "Station",
                         "state": "State"}
             )
+        
+        elif chart_type == "Box":
+            fig = px.box(
+                df_filtered.dropna(subset=[selected_col]),
+                x="state" if "state" in df_filtered.columns
+                  else "station_name",
+                y=selected_col,
+                color="state" if "state" in df_filtered.columns
+                      else None,
+                title=f"{selected_label} Distribution by State",
+                height=440,
+                labels={
+                    selected_col: selected_label,
+                    "state": "State",
+                },
+                points="outliers",
+            )
+
+        elif chart_type == "Violin":
+            fig = px.violin(
+                df_filtered.dropna(subset=[selected_col]),
+                x="state" if "state" in df_filtered.columns
+                  else "station_name",
+                y=selected_col,
+                color="state" if "state" in df_filtered.columns
+                      else None,
+                box=True,
+                title=f"{selected_label} Distribution by State "
+                      f"(Violin + Box)",
+                height=440,
+                labels={
+                    selected_col: selected_label,
+                    "state": "State",
+                },
+            )
+
+        elif chart_type == "Radar":
+            # Radar chart: one trace per selected state
+            # Shows the relative profile of all variables
+            radar_vars = {
+                "temperature_c":  "Temp",
+                "humidity_pct":   "Humidity",
+                "wind_speed_kmh": "Wind",
+                "pressure_hpa":   "Pressure",
+                "feels_like_c":   "Feels Like",
+            }
+            radar_available = {
+                k: v for k, v in radar_vars.items()
+                if k in df_filtered.columns
+            }
+
+            fig = go.Figure()
+
+            group_col = "state" if "state" in df_filtered.columns \
+                        else "station_name"
+            for group_val in df_filtered[group_col].dropna().unique():
+                grp = df_filtered[
+                    df_filtered[group_col] == group_val
+                ]
+                means = []
+                for col in radar_available:
+                    v = pd.to_numeric(
+                        grp[col], errors="coerce"
+                    ).mean()
+                    means.append(v if not np.isnan(v) else 0)
+
+                fig.add_trace(go.Scatterpolar(
+                    r=means,
+                    theta=list(radar_available.values()),
+                    fill="toself",
+                    name=str(group_val),
+                    opacity=0.6,
+                ))
+
+            fig.update_layout(
+                polar=dict(
+                    radialaxis=dict(visible=True)
+                ),
+                title="Climate Variable Radar Profile by State",
+                height=480,
+                showlegend=True,
+            )
+
+        elif chart_type == "Heatmap":
+            # Heatmap: stations (rows) vs variables (columns)
+            # Colour = normalised value
+            hmap_vars = {
+                "temperature_c":  "Temp (°C)",
+                "humidity_pct":   "Humidity (%)",
+                "wind_speed_kmh": "Wind (km/h)",
+                "pressure_hpa":   "Pressure (hPa)",
+                "feels_like_c":   "Feels Like (°C)",
+            }
+            hmap_available = {
+                k: v for k, v in hmap_vars.items()
+                if k in df_filtered.columns
+            }
+
+            hmap_df = df_filtered.groupby("station_name")[
+                list(hmap_available.keys())
+            ].mean().reset_index()
+            hmap_df = hmap_df.set_index("station_name")
+
+            for col in hmap_df.columns:
+                hmap_df[col] = pd.to_numeric(
+                    hmap_df[col], errors="coerce"
+                )
+
+            # Normalise each column to 0-1 for comparable colour scale
+            hmap_norm = hmap_df.copy()
+            for col in hmap_norm.columns:
+                col_min = hmap_norm[col].min()
+                col_max = hmap_norm[col].max()
+                rng     = col_max - col_min
+                if rng > 0:
+                    hmap_norm[col] = (
+                        (hmap_norm[col] - col_min) / rng
+                    )
+
+            hmap_norm.columns = list(hmap_available.values())
+
+            fig = px.imshow(
+                hmap_norm.head(40).T,
+                color_continuous_scale="RdYlBu_r",
+                title="Climate Variable Heatmap — "
+                      "Top 40 Stations (normalised 0-1)",
+                height=max(300, len(hmap_available) * 60),
+                aspect="auto",
+                labels=dict(
+                    x="Station",
+                    y="Variable",
+                    color="Relative Value"
+                ),
+            )
+            fig.update_xaxes(tickangle=-45)
+
+        elif chart_type == "Bubble":
+            # Bubble chart: temperature vs humidity
+            # Bubble size = wind speed
+            # Colour = state
+            bubble_df = df_filtered.groupby("station_name").agg({
+                "temperature_c":  "mean",
+                "humidity_pct":   "mean",
+                "wind_speed_kmh": "mean",
+                "state":          "first",
+            }).reset_index().dropna()
+
+            for col in ["temperature_c", "humidity_pct",
+                        "wind_speed_kmh"]:
+                bubble_df[col] = pd.to_numeric(
+                    bubble_df[col], errors="coerce"
+                ).round(1)
+
+            fig = px.scatter(
+                bubble_df,
+                x="temperature_c",
+                y="humidity_pct",
+                size="wind_speed_kmh",
+                color="state" if "state" in bubble_df.columns
+                      else "station_name",
+                hover_name="station_name",
+                size_max=30,
+                title="Temperature vs Humidity — "
+                      "Bubble size = Wind Speed",
+                height=480,
+                labels={
+                    "temperature_c":  "Temperature (°C)",
+                    "humidity_pct":   "Humidity (%)",
+                    "wind_speed_kmh": "Wind Speed (km/h)",
+                    "state":          "State",
+                },
+            )
+            fig.update_layout(
+                plot_bgcolor=PLOT_BG,
+                paper_bgcolor=PLOT_BG,
+            )
 
         fig.update_layout(
             plot_bgcolor=PLOT_BG,
             paper_bgcolor=PLOT_BG,
             margin=dict(t=50, b=40, l=40, r=20),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # ── Dashboard tiles ───────────────────────────────────────────
     st.divider()
@@ -398,7 +575,7 @@ with tab1:
 
     btn1, btn2, _ = st.columns([1, 1, 4])
     with btn1:
-        if st.button("➕ Pin Chart", use_container_width=True):
+        if st.button("➕ Pin Chart", width='stretch'):
             if selected_stations:
                 st.session_state.tiles.append({
                     "stations": selected_stations[:],
@@ -408,7 +585,7 @@ with tab1:
                 })
                 st.toast("Chart pinned to dashboard.")
     with btn2:
-        if st.button("🗑️ Clear All", use_container_width=True):
+        if st.button("🗑️ Clear All", width='stretch'):
             st.session_state.tiles = []
 
     if st.session_state.tiles:
@@ -452,7 +629,7 @@ with tab1:
                         paper_bgcolor=PLOT_BG,
                         xaxis_tickangle=-30,
                     )
-                    st.plotly_chart(tf, use_container_width=True)
+                    st.plotly_chart(tf, width='stretch')
 
                     if st.button("Remove", key=f"rm_{i}"):
                         tiles_to_remove.append(i)
@@ -533,7 +710,7 @@ with tab2:
             margin=dict(t=50, b=0, l=0, r=0),
             coloraxis_colorbar=dict(title=map_colour_label),
         )
-        st.plotly_chart(fig_map, use_container_width=True)
+        st.plotly_chart(fig_map, width='stretch')
 
         # State breakdown
         st.divider()
@@ -558,7 +735,7 @@ with tab2:
                 plot_bgcolor=PLOT_BG,
                 paper_bgcolor=PLOT_BG,
             )
-            st.plotly_chart(fig_sc, use_container_width=True)
+            st.plotly_chart(fig_sc, width='stretch')
 
         with c2:
             st.subheader("Temperature Distribution")
@@ -578,7 +755,7 @@ with tab2:
                 paper_bgcolor=PLOT_BG,
                 showlegend=False,
             )
-            st.plotly_chart(fig_hist, use_container_width=True)
+            st.plotly_chart(fig_hist, width='stretch')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -586,6 +763,189 @@ with tab2:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab3:
     st.subheader("⚠️ Climate Anomaly Detection")
+    
+        # ── ML Results (Isolation Forest) ────────────────────────────
+    ml_available = (
+        "ml_anomaly_flag" in df.columns and
+        df["ml_anomaly_flag"].notna().any()
+    )
+
+    if ml_available:
+        st.success(
+            "Isolation Forest ML model active — "
+            "anomalies detected across 5 climate variables."
+        )
+
+        ml_df = df[df["ml_anomaly_flag"] == True].copy()
+
+        # Summary metrics
+        n_total    = len(df)
+        n_anomaly  = int(df["ml_anomaly_flag"].sum())
+        n_severe   = len(df[df["ml_severity"] == "Severe"])
+        n_moderate = len(df[df["ml_severity"] == "Moderate"])
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Observations Scored",  f"{n_total:,}")
+        c2.metric("Anomalies Flagged",    f"{n_anomaly:,}")
+        c3.metric("🔴 Severe",            n_severe)
+        c4.metric("🟠 Moderate",          n_moderate)
+
+        st.divider()
+
+        # Severity distribution
+        sev_counts = (
+            df["ml_severity"].value_counts().reset_index()
+        )
+        sev_counts.columns = ["Severity", "Count"]
+        sev_order   = ["Severe", "Moderate", "Mild", "Normal"]
+        sev_colours = {
+            "Severe":   "#ef4444",
+            "Moderate": "#f97316",
+            "Mild":     "#eab308",
+            "Normal":   "#22c55e",
+        }
+        sev_counts = sev_counts[
+            sev_counts["Severity"].isin(sev_order)
+        ]
+
+        col_sev, col_driver = st.columns(2)
+
+        with col_sev:
+            fig_sev = px.bar(
+                sev_counts,
+                x="Severity", y="Count",
+                color="Severity",
+                color_discrete_map=sev_colours,
+                title="Anomaly Severity Distribution",
+                height=320,
+                text_auto=True,
+            )
+            fig_sev.update_layout(
+                showlegend=False,
+                plot_bgcolor=PLOT_BG,
+                paper_bgcolor=PLOT_BG,
+            )
+            st.plotly_chart(fig_sev, width='stretch')
+
+        with col_driver:
+            driver_counts = (
+                ml_df["ml_primary_driver"]
+                .value_counts().reset_index()
+            )
+            driver_counts.columns = ["Driver", "Count"]
+            if not driver_counts.empty:
+                fig_drv = px.pie(
+                    driver_counts,
+                    names="Driver", values="Count",
+                    title="Primary Anomaly Driver",
+                    height=320,
+                    color_discrete_sequence=px.colors.qualitative.Set2,
+                )
+                st.plotly_chart(fig_drv, width='stretch')
+
+        # Station anomaly summary
+        st.subheader("Station Risk Summary")
+        from anomaly.detector import compute_station_anomaly_summary
+        station_risk = compute_station_anomaly_summary(df)
+
+        if not station_risk.empty:
+            risk_colours = {
+                "High": "#ef4444", "Medium": "#f97316",
+                "Low":  "#eab308", "Normal": "#22c55e"
+            }
+
+            fig_risk = px.scatter_mapbox(
+                station_risk.dropna(
+                    subset=["latitude", "longitude"]
+                ),
+                lat="latitude", lon="longitude",
+                color="station_risk",
+                color_discrete_map=risk_colours,
+                size="anomaly_count",
+                size_max=18,
+                hover_name="station_name",
+                hover_data={
+                    "state":           True,
+                    "anomaly_count":   True,
+                    "anomaly_rate_pct":True,
+                    "primary_driver":  True,
+                    "station_risk":    True,
+                    "latitude":        False,
+                    "longitude":       False,
+                },
+                mapbox_style="carto-darkmatter",
+                zoom=3.5,
+                center={"lat": -26, "lon": 134},
+                height=520,
+                title="Station Risk Map — "
+                      "dot size = anomaly count, colour = risk level",
+            )
+            st.plotly_chart(fig_risk, width='stretch')
+
+            # Risk table
+            display_risk = station_risk.rename(columns={
+                "station_name":      "Station",
+                "state":             "State",
+                "total_observations":"Total Obs",
+                "anomaly_count":     "Anomalies",
+                "anomaly_rate_pct":  "Anomaly Rate (%)",
+                "severe_count":      "Severe",
+                "moderate_count":    "Moderate",
+                "avg_anomaly_score": "Avg Score",
+                "primary_driver":    "Primary Driver",
+                "station_risk":      "Risk Level",
+            })
+            keep_cols = [
+                "Station", "State", "Total Obs", "Anomalies",
+                "Anomaly Rate (%)", "Severe", "Moderate",
+                "Primary Driver", "Risk Level"
+            ]
+            keep_cols = [c for c in keep_cols if c in display_risk.columns]
+            st.dataframe(
+                display_risk[keep_cols].sort_values(
+                    "Anomalies", ascending=False
+                ),
+                width='stretch',
+                hide_index=True,
+            )
+
+        # Anomalous observations detail
+        st.subheader("Most Anomalous Observations")
+        detail_cols = [
+            "station_name", "state", "temperature_c",
+            "feels_like_c", "humidity_pct", "wind_speed_kmh",
+            "ml_anomaly_score", "ml_severity", "ml_primary_driver"
+        ]
+        detail_cols = [c for c in detail_cols if c in ml_df.columns]
+
+        top_anomalies = (
+            ml_df[detail_cols]
+            .sort_values("ml_anomaly_score")
+            .head(20)
+            .rename(columns={
+                "station_name":      "Station",
+                "state":             "State",
+                "temperature_c":     "Temp (°C)",
+                "feels_like_c":      "Feels Like (°C)",
+                "humidity_pct":      "Humidity (%)",
+                "wind_speed_kmh":    "Wind (km/h)",
+                "ml_anomaly_score":  "Anomaly Score",
+                "ml_severity":       "Severity",
+                "ml_primary_driver": "Primary Driver",
+            })
+        )
+        st.dataframe(
+            top_anomalies,
+            width='stretch',
+            hide_index=True,
+        )
+
+        st.caption(
+            "Anomaly Score: more negative = more anomalous. "
+            "Primary Driver: the climate variable contributing "
+            "most to the anomaly flag (full SHAP attribution in Phase 3)."
+        )
+        st.divider()
 
     if anomaly_available:
         # ── BARRA2-based anomalies ────────────────────────────────
@@ -670,7 +1030,7 @@ with tab3:
             paper_bgcolor=PLOT_BG,
             coloraxis_colorbar=dict(title="Anomaly (°C)"),
         )
-        st.plotly_chart(fig_anom, use_container_width=True)
+        st.plotly_chart(fig_anom, width='stretch')
 
         # Multi-variable anomaly
         st.subheader("Multi-Variable Anomaly Overview")
@@ -711,7 +1071,7 @@ with tab3:
                 paper_bgcolor=PLOT_BG,
                 coloraxis_colorbar=dict(title=selected_anom_var),
             )
-            st.plotly_chart(fig_av, use_container_width=True)
+            st.plotly_chart(fig_av, width='stretch')
 
         # Anomaly detail table
         st.subheader("Anomaly Detail Table")
@@ -728,7 +1088,7 @@ with tab3:
             display_anom.sort_values(
                 "Temp Anomaly (°C)", ascending=False
             ),
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
         )
 
@@ -824,7 +1184,7 @@ with tab3:
                 paper_bgcolor=PLOT_BG,
                 coloraxis_colorbar=dict(title="Z-Score"),
             )
-            st.plotly_chart(fig_z, use_container_width=True)
+            st.plotly_chart(fig_z, width='stretch')
 
             # Top outlier tables
             st.divider()
@@ -842,7 +1202,7 @@ with tab3:
                             "temperature_c": "Avg Temp (°C)",
                             "z_score":       "Z-Score",
                         }),
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                     )
                 else:
@@ -861,7 +1221,7 @@ with tab3:
                             "temperature_c": "Avg Temp (°C)",
                             "z_score":       "Z-Score",
                         }),
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True,
                     )
                 else:
@@ -915,7 +1275,7 @@ with tab4:
                 disp.sort_values(
                     "Avg Temp (°C)", ascending=False
                 ) if "Avg Temp (°C)" in disp.columns else disp,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
             )
     else:
@@ -1001,7 +1361,7 @@ with tab4:
                     xanchor="right",  x=1,
                 )
             )
-            st.plotly_chart(fig_comp, use_container_width=True)
+            st.plotly_chart(fig_comp, width='stretch')
 
             # Difference chart
             comp_clean["difference"] = (
@@ -1028,7 +1388,7 @@ with tab4:
                 plot_bgcolor=PLOT_BG,
                 paper_bgcolor=PLOT_BG,
             )
-            st.plotly_chart(fig_diff, use_container_width=True)
+            st.plotly_chart(fig_diff, width='stretch')
 
             # BARRA2 metadata
             if "barra2_baseline_year" in df.columns:
@@ -1125,7 +1485,7 @@ with tab5:
 
         st.dataframe(
             disp,
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             height=580,
         )
@@ -1137,7 +1497,7 @@ with tab5:
                 data=disp.to_csv(index=False),
                 file_name="ausclimate_station_summary.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width='stretch',
             )
         with c_dl2:
             st.download_button(
@@ -1145,7 +1505,7 @@ with tab5:
                 data=disp.to_json(orient="records", indent=2),
                 file_name="ausclimate_station_summary.json",
                 mime="application/json",
-                use_container_width=True,
+                width='stretch',
             )
 
     # Raw data preview
@@ -1153,7 +1513,7 @@ with tab5:
         if not df.empty:
             st.dataframe(
                 df.head(500),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
             )
         else:
