@@ -6,3 +6,8 @@ fastparquet
 streamlit
 plotly
 python-dotenv
+xarray
+netCDF4
+scipy
+beautifulsoup4
+cdsapi
