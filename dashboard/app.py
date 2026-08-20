@@ -1,5 +1,5 @@
 """
-AusClimate Dashboard — dashboard/app.py
+AusClimate Dashboard  dashboard/app.py
 Real-time Australian Climate Analytics Platform
 UTS Capstone Project 2026
 """
@@ -271,7 +271,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 1 — OVERVIEW
+# TAB 1: OVERVIEW
 # ─────────────────────────────────────────────────────────────────────────────
 with tab1:
     st.subheader("Live Australian Climate Overview")
@@ -377,7 +377,7 @@ with tab1:
                 x="station_name", y=selected_col,
                 color="state" if "state" in df_filtered.columns else None,
                 opacity=0.5, height=440,
-                title=f"{selected_label} — All Observations",
+                title=f"{selected_label} - All Observations",
                 labels={selected_col: selected_label,
                         "station_name": "Station",
                         "state": "State"}
@@ -506,7 +506,7 @@ with tab1:
             fig = px.imshow(
                 hmap_norm.head(40).T,
                 color_continuous_scale="RdYlBu_r",
-                title="Climate Variable Heatmap — "
+                title="Climate Variable Heatmap: "
                       "Top 40 Stations (normalised 0-1)",
                 height=max(300, len(hmap_available) * 60),
                 aspect="auto",
@@ -544,7 +544,7 @@ with tab1:
                       else "station_name",
                 hover_name="station_name",
                 size_max=30,
-                title="Temperature vs Humidity — "
+                title="Temperature vs Humidity: "
                       "Bubble size = Wind Speed",
                 height=480,
                 labels={
@@ -644,7 +644,7 @@ with tab1:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 2 — STATION MAP
+# TAB 2: STATION MAP
 # ─────────────────────────────────────────────────────────────────────────────
 with tab2:
     st.subheader("🗺️ National Station Coverage")
@@ -703,7 +703,7 @@ with tab2:
             zoom=3.5,
             center={"lat": -26, "lon": 134},
             height=580,
-            title=f"{len(map_df)} BOM Stations — coloured by {map_colour_label}",
+            title=f"{len(map_df)} BOM Stations - coloured by {map_colour_label}",
             labels={map_colour_col: map_colour_label},
         )
         fig_map.update_layout(
@@ -759,7 +759,7 @@ with tab2:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 3 — ANOMALIES
+# TAB 3: ANOMALIES
 # ─────────────────────────────────────────────────────────────────────────────
 with tab3:
     st.subheader("⚠️ Climate Anomaly Detection")
@@ -772,7 +772,7 @@ with tab3:
 
     if ml_available:
         st.success(
-            "Isolation Forest ML model active — "
+            "Isolation Forest ML model active: "
             "anomalies detected across 5 climate variables."
         )
 
@@ -877,7 +877,7 @@ with tab3:
                 zoom=3.5,
                 center={"lat": -26, "lon": 134},
                 height=520,
-                title="Station Risk Map — "
+                title="Station Risk Map: "
                       "dot size = anomaly count, colour = risk level",
             )
             st.plotly_chart(fig_risk, width='stretch')
@@ -1003,7 +1003,7 @@ with tab3:
             color_continuous_scale="RdBu_r",
             color_continuous_midpoint=0,
             title="Temperature Anomaly vs BARRA2 Historical Baseline (°C) "
-                  "— Top 40 Stations by Magnitude",
+                  "- Top 40 Stations by Magnitude",
             height=440,
             labels={
                 "temp_anomaly_c":  "Anomaly (°C)",
@@ -1061,7 +1061,7 @@ with tab3:
                 color_continuous_scale="RdBu_r",
                 color_continuous_midpoint=0,
                 height=380,
-                title=f"{selected_anom_var} — Top 40 Stations",
+                title=f"{selected_anom_var} - Top 40 Stations",
                 labels={"station_name": "Station", anom_col: selected_anom_var}
             )
             fig_av.add_hline(y=0, line_color="white", opacity=0.2)
@@ -1093,7 +1093,7 @@ with tab3:
         )
 
     else:
-        # ── BARRA2 not available — statistical outliers ───────────
+        # ── BARRA2 not available - statistical outliers ───────────
         st.info(
             "BARRA2 historical baseline is not yet loaded. "
             "Showing statistical outliers from live BOM data. "
@@ -1156,7 +1156,7 @@ with tab3:
                 color="z_score",
                 color_continuous_scale="RdBu_r",
                 color_continuous_midpoint=0,
-                title="Temperature Z-Scores — Top 50 Stations "
+                title="Temperature Z-Scores - Top 50 Stations "
                       "(|z| > 2 = statistical outlier)",
                 height=440,
                 text_auto=".1f",
@@ -1229,7 +1229,7 @@ with tab3:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 4 — BARRA2 COMPARISON
+# TAB 4: BARRA2 COMPARISON
 # ─────────────────────────────────────────────────────────────────────────────
 with tab4:
     st.subheader("📈 BOM Live vs BARRA2 Historical Baseline")
@@ -1247,7 +1247,7 @@ with tab4:
         - Spatial distribution of anomalies across Australia
         """)
         st.divider()
-        st.subheader("Current BOM Summary — All Stations")
+        st.subheader("Current BOM Summary: All Stations")
         if not summary.empty:
             disp_cols = {
                 "station_name":        "Station",
@@ -1348,7 +1348,7 @@ with tab4:
             ))
             fig_comp.update_layout(
                 barmode="group",
-                title=f"BOM Current vs BARRA2 Historical — "
+                title=f"BOM Current vs BARRA2 Historical"
                       f"{selected_pair_label} (Top 40 stations)",
                 xaxis_tickangle=-45,
                 height=480,
@@ -1401,12 +1401,12 @@ with tab4:
                 st.caption(
                     f"BARRA2 baseline: {yr}-{int(mo):02d}, "
                     f"frequency: {freq}, resolution: 12km (AUS-11 grid). "
-                    f"Source: NCI THREDDS ob53 — CC-BY 4.0"
+                    f"Source: NCI THREDDS ob53 - CC-BY 4.0"
                 )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 5 — DATA TABLE
+# TAB 5: DATA TABLE
 # ─────────────────────────────────────────────────────────────────────────────
 with tab5:
     st.subheader("📋 Station Summary Table")
@@ -1531,7 +1531,7 @@ with col_f1:
     st.caption(
         f"Data: Bureau of Meteorology Live JSON API | "
         f"{barra2_note}"
-        f"AusClimate Capstone Project — "
+        f"AusClimate Capstone Project: "
         f"University of Technology Sydney 2026"
     )
 with col_f2:
