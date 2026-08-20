@@ -128,7 +128,7 @@ with st.sidebar:
     n_stations = df["station_name"].nunique() if "station_name" in df.columns else 0
     bom_status = (
         f'<span class="status-ok">● Live</span> '
-        f'— {n_stations} stations'
+        f' {n_stations} stations'
         if n_stations > 0
         else '<span class="status-err">● No data</span>'
     )
@@ -141,7 +141,7 @@ with st.sidebar:
     st.markdown(
         f"**BOM** {bom_status}<br>"
         f"**BARRA2** {barra2_status}<br>"
-        f"**ERA5** <span class=\"status-warn\">● Needs CDS key</span>",
+        f"**ERA5** <span class=\"status-warn\">● To be loaded</span>",
         unsafe_allow_html=True
     )
     st.divider()
@@ -1375,7 +1375,7 @@ with tab4:
                 color_continuous_scale="RdBu_r",
                 color_continuous_midpoint=0,
                 title=f"Difference: BOM Current minus BARRA2 Historical "
-                      f"— {selected_pair_label}",
+                      f": {selected_pair_label}",
                 height=380,
                 labels={
                     "station_name": "Station",
