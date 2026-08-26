@@ -137,17 +137,44 @@ def run_pipeline(force_refresh: bool = False,
         df_merged = run_ml_pipeline(
             df_merged,
             force_retrain=force_retrain,
+            force_shap=force_refresh, 
         )
         # Save again with ML columns added
         save_parquet(df_merged, MERGED_DATA_PATH)
 
     except ImportError:
-        print("  scikit-learn not installed.")
-        print("  Run: pip install scikit-learn")
+        print("  scikit-learn or shap not installed.")
+        print("  Run: pip install scikit-learn shap")
         print("  Continuing without ML results.")
     except Exception as e:
         print(f"  ML pipeline error: {e}")
         print("  Continuing without ML results.")
+    
+        # ── Step 4c: AEMO energy demand ────────────────────────────────
+    # Fetches 5-minute electricity demand and spot price for
+    # the five NEM regions, maps them to BOM states, and
+    # computes temperature-demand correlation per region.
+    print("\n[4c/5] AEMO Energy Demand")
+    print("-" * 40)
+
+    try:
+        from ingestion.aemo import fetch_aemo_dispatch, merge_aemo_with_bom
+        from pipeline.storage import save_parquet as sp
+
+        df_aemo = fetch_aemo_dispatch()
+
+        if not df_aemo.empty:
+            sp(df_aemo, "data/processed/aemo_latest.parquet")
+
+            # Merge AEMO with BOM temperature data
+            df_aemo_bom = merge_aemo_with_bom(df_bom, df_aemo)
+            if not df_aemo_bom.empty:
+                sp(df_aemo_bom, "data/processed/aemo_bom_merged.parquet")
+                print(f"  AEMO-BOM merge: {len(df_aemo_bom)} regions")
+
+    except Exception as e:
+        print(f"  AEMO error: {e}")
+        print("  Continuing without AEMO data.")
 
     # ── Step 5: Feature engineering ───────────────────────────────
     # Computes per-station aggregate features:
@@ -233,3 +260,13 @@ if __name__ == "__main__":
         force_refresh=force_refresh,
         force_retrain=force_retrain,
     )
+    aemo_demand = 0
+    aemo_path   = "data/processed/aemo_latest.parquet"
+    if os.path.exists(aemo_path):
+        try:
+            df_a = pd.read_parquet(aemo_path)
+            if "total_demand_mw" in df_a.columns:
+                aemo_demand = df_a["total_demand_mw"].sum()
+        except Exception:
+            pass
+    print(f"  AEMO total NEM demand : {aemo_demand:,.0f} MW")

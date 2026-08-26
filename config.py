@@ -163,3 +163,45 @@ ERA5_CACHE_PATH        = "data/processed/era5_latest.parquet"
 MERGED_DATA_PATH       = "data/processed/merged_latest.parquet"
 STATION_SUMMARY_PATH   = "data/processed/station_summary.parquet"
 STATION_LIST_PATH      = "data/processed/station_list.parquet"
+
+# ── AEMO Configuration ────────────────────────────────────────────────────────
+# Australian Energy Market Operator public dispatch data
+# No API key required. Data updated every 5 minutes.
+# Coverage: NEM regions only (WA and NT are separate markets)
+# Licence: Creative Commons Attribution 4.0
+
+# Old -- decommissioned April 2026
+# AEMO_NEMWEB_BASE = "https://www.aemo.com.au/-/media/files/electricity/nem/data/nemweb/reports/current/dispatchis/"
+
+# New -- confirmed working August 2026
+AEMO_NEMWEB_BASE = "https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/"
+
+# Fallback visualization API -- also updated
+AEMO_VIS_API = (
+    "https://visualisations.aemo.com.au/aemo/nemweb/index.html"
+)
+
+# NEM region to BOM state mapping
+# WA and NT are not on the NEM
+AEMO_REGION_TO_STATES = {
+    "NSW1": ["NSW", "ACT"],
+    "VIC1": ["VIC"],
+    "QLD1": ["QLD"],
+    "SA1":  ["SA"],
+    "TAS1": ["TAS"],
+}
+
+# Human readable region names
+AEMO_REGION_LABELS = {
+    "NSW1": "New South Wales",
+    "VIC1": "Victoria",
+    "QLD1": "Queensland",
+    "SA1":  "South Australia",
+    "TAS1": "Tasmania",
+}
+
+# Storage
+AEMO_CACHE_PATH    = "data/processed/aemo_latest.parquet"
+AEMO_HISTORY_PATH  = "data/processed/aemo_history.parquet"
+AEMO_CACHE_HOURS   = 0.25  # 15 minutes: AEMO updates every 5 min
+AEMO_HISTORY_LIMIT = 2016  # Keep last 7 days of 5-min intervals

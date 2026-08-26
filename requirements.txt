@@ -11,3 +11,7 @@ netCDF4
 scipy
 beautifulsoup4
 cdsapi
+scikit-learn
+io
+zipfile
+shap

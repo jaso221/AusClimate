@@ -19,6 +19,7 @@ from config import (
     MERGED_DATA_PATH,
     STATION_SUMMARY_PATH,
     BARRA2_CACHE_PATH,
+    AEMO_REGION_LABELS,
 )
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -76,6 +77,8 @@ PLOT_BG      = "rgba(0,0,0,0)"
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
+
+
 @st.cache_data(ttl=1800)
 def load_all_data():
     """Load all pipeline output files. Returns empty DataFrames on missing."""
@@ -93,8 +96,42 @@ def load_all_data():
     summary = safe_read(STATION_SUMMARY_PATH)
     return merged, summary
 
+@st.cache_data(ttl=300)
+def load_aemo_data():
+    """Load AEMO pipeline output files. 5-minute cache matches AEMO update frequency."""
+    def safe_read(path):
+        if os.path.exists(path):
+            try:
+                return pd.read_parquet(path)
+            except Exception:
+                return pd.DataFrame()
+        return pd.DataFrame()
 
+    return (
+        safe_read("data/processed/aemo_latest.parquet"),
+        safe_read("data/processed/aemo_bom_merged.parquet"),
+        safe_read("data/processed/aemo_history.parquet"),
+    )
+    
+@st.cache_data(ttl=1800)
+def load_shap_data():
+    """Load saved SHAP values and global importance."""
+    def safe_read(path):
+        if os.path.exists(path):
+            try:
+                return pd.read_parquet(path)
+            except Exception:
+                return pd.DataFrame()
+        return pd.DataFrame()
+    return (
+        safe_read("data/processed/shap_results.parquet"),
+        safe_read("data/processed/shap_global_importance.parquet"),
+    )
+
+df_shap, df_shap_global = load_shap_data()    
 df, summary = load_all_data()
+df_aemo, df_aemo_bom, df_aemo_history = load_aemo_data()
+
 
 
 def check_barra2_has_data(dataframe: pd.DataFrame) -> bool:
@@ -261,12 +298,14 @@ station_mean.columns = ["Station", selected_label]
 
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📊 Overview",
     "🗺️ Station Map",
     "⚠️ Anomalies",
     "📈 BARRA2 Comparison",
     "📋 Data Table",
+    "⚡ Energy",
+    "🤖 Climate Assistant",
 ])
 
 
@@ -759,474 +798,531 @@ with tab2:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 3: ANOMALIES
+# TAB 3 -- ANOMALIES
 # ─────────────────────────────────────────────────────────────────────────────
 with tab3:
-    st.subheader("⚠️ Climate Anomaly Detection")
-    
-        # ── ML Results (Isolation Forest) ────────────────────────────
+    st.subheader("Climate Anomaly Detection")
+
     ml_available = (
-        "ml_anomaly_flag" in df.columns and
-        df["ml_anomaly_flag"].notna().any()
+        "ml_anomaly_flag" in df.columns
+        and df["ml_anomaly_flag"].notna().any()
+    )
+    anomaly_available = (
+        "temp_anomaly_c" in df.columns
+        and df["temp_anomaly_c"].notna().any()
+    )
+    shap_available = (
+        "shap_computed" in df.columns
+        and df["shap_computed"].any()
     )
 
+    # ── ML results (Isolation Forest) ─────────────────────────────
     if ml_available:
         st.success(
-            "Isolation Forest ML model active: "
+            "Isolation Forest ML model active -- "
             "anomalies detected across 5 climate variables."
         )
 
-        ml_df = df[df["ml_anomaly_flag"] == True].copy()
-
-        # Summary metrics
+        ml_df      = df[df["ml_anomaly_flag"] == True].copy()
         n_total    = len(df)
         n_anomaly  = int(df["ml_anomaly_flag"].sum())
-        n_severe   = len(df[df["ml_severity"] == "Severe"])
-        n_moderate = len(df[df["ml_severity"] == "Moderate"])
+        n_severe   = int((df["ml_severity"] == "Severe").sum())   \
+            if "ml_severity" in df.columns else 0
+        n_moderate = int((df["ml_severity"] == "Moderate").sum()) \
+            if "ml_severity" in df.columns else 0
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Observations Scored",  f"{n_total:,}")
-        c2.metric("Anomalies Flagged",    f"{n_anomaly:,}")
-        c3.metric("🔴 Severe",            n_severe)
-        c4.metric("🟠 Moderate",          n_moderate)
+        c1.metric("Observations Scored", f"{n_total:,}")
+        c2.metric("Anomalies Flagged",   f"{n_anomaly:,}")
+        c3.metric("Severe",              n_severe)
+        c4.metric("Moderate",            n_moderate)
 
         st.divider()
 
-        # Severity distribution
-        sev_counts = (
-            df["ml_severity"].value_counts().reset_index()
-        )
-        sev_counts.columns = ["Severity", "Count"]
-        sev_order   = ["Severe", "Moderate", "Mild", "Normal"]
-        sev_colours = {
-            "Severe":   "#ef4444",
-            "Moderate": "#f97316",
-            "Mild":     "#eab308",
-            "Normal":   "#22c55e",
-        }
-        sev_counts = sev_counts[
-            sev_counts["Severity"].isin(sev_order)
-        ]
-
-        col_sev, col_driver = st.columns(2)
+        col_sev, col_drv = st.columns(2)
 
         with col_sev:
-            fig_sev = px.bar(
-                sev_counts,
-                x="Severity", y="Count",
-                color="Severity",
-                color_discrete_map=sev_colours,
-                title="Anomaly Severity Distribution",
-                height=320,
-                text_auto=True,
-            )
-            fig_sev.update_layout(
-                showlegend=False,
-                plot_bgcolor=PLOT_BG,
-                paper_bgcolor=PLOT_BG,
-            )
-            st.plotly_chart(fig_sev, width='stretch')
-
-        with col_driver:
-            driver_counts = (
-                ml_df["ml_primary_driver"]
-                .value_counts().reset_index()
-            )
-            driver_counts.columns = ["Driver", "Count"]
-            if not driver_counts.empty:
-                fig_drv = px.pie(
-                    driver_counts,
-                    names="Driver", values="Count",
-                    title="Primary Anomaly Driver",
+            if "ml_severity" in df.columns:
+                sev_counts = df["ml_severity"].value_counts().reset_index()
+                sev_counts.columns = ["Severity", "Count"]
+                sev_colours = {
+                    "Severe":   "#ef4444",
+                    "Moderate": "#f97316",
+                    "Mild":     "#eab308",
+                    "Normal":   "#22c55e",
+                    "Unknown":  "#6b7280",
+                }
+                fig_sev = px.bar(
+                    sev_counts,
+                    x="Severity", y="Count",
+                    color="Severity",
+                    color_discrete_map=sev_colours,
+                    title="Anomaly Severity Distribution",
                     height=320,
-                    color_discrete_sequence=px.colors.qualitative.Set2,
+                    text_auto=True,
                 )
-                st.plotly_chart(fig_drv, width='stretch')
+                fig_sev.update_layout(
+                    showlegend=False,
+                    plot_bgcolor=PLOT_BG,
+                    paper_bgcolor=PLOT_BG,
+                )
+                st.plotly_chart(fig_sev, use_container_width=True)
 
-        # Station anomaly summary
-        st.subheader("Station Risk Summary")
+        with col_drv:
+            driver_col = (
+                "shap_top_driver" if shap_available
+                else "ml_primary_driver"
+            )
+            if driver_col in df.columns:
+                driver_counts = (
+                    ml_df[driver_col]
+                    .replace("", np.nan)
+                    .dropna()
+                    .value_counts()
+                    .reset_index()
+                )
+                driver_counts.columns = ["Driver", "Count"]
+                title_suffix = "(SHAP)" if shap_available else "(Phase 2)"
+                if not driver_counts.empty:
+                    fig_drv = px.pie(
+                        driver_counts,
+                        names="Driver", values="Count",
+                        title=f"Primary Anomaly Driver {title_suffix}",
+                        height=320,
+                        color_discrete_sequence=px.colors.qualitative.Set2,
+                    )
+                    st.plotly_chart(fig_drv, use_container_width=True)
+
+        # Station risk map
+        st.subheader("Station Risk Map")
         from anomaly.detector import compute_station_anomaly_summary
         station_risk = compute_station_anomaly_summary(df)
 
         if not station_risk.empty:
             risk_colours = {
-                "High": "#ef4444", "Medium": "#f97316",
-                "Low":  "#eab308", "Normal": "#22c55e"
+                "High":   "#ef4444",
+                "Medium": "#f97316",
+                "Low":    "#eab308",
+                "Normal": "#22c55e",
             }
-
-            fig_risk = px.scatter_mapbox(
-                station_risk.dropna(
-                    subset=["latitude", "longitude"]
-                ),
-                lat="latitude", lon="longitude",
-                color="station_risk",
-                color_discrete_map=risk_colours,
-                size="anomaly_count",
-                size_max=18,
-                hover_name="station_name",
-                hover_data={
-                    "state":           True,
-                    "anomaly_count":   True,
-                    "anomaly_rate_pct":True,
-                    "primary_driver":  True,
-                    "station_risk":    True,
-                    "latitude":        False,
-                    "longitude":       False,
-                },
-                mapbox_style="carto-darkmatter",
-                zoom=3.5,
-                center={"lat": -26, "lon": 134},
-                height=520,
-                title="Station Risk Map: "
-                      "dot size = anomaly count, colour = risk level",
-            )
-            st.plotly_chart(fig_risk, width='stretch')
+            map_df = station_risk.dropna(subset=["latitude", "longitude"])
+            if not map_df.empty:
+                fig_risk = px.scatter_mapbox(
+                    map_df,
+                    lat="latitude",
+                    lon="longitude",
+                    color="station_risk",
+                    color_discrete_map=risk_colours,
+                    size="anomaly_count",
+                    size_max=18,
+                    hover_name="station_name",
+                    hover_data={
+                        "state":           True,
+                        "anomaly_count":   True,
+                        "anomaly_rate_pct":True,
+                        "station_risk":    True,
+                        "latitude":        False,
+                        "longitude":       False,
+                    },
+                    mapbox_style="carto-darkmatter",
+                    zoom=3.5,
+                    center={"lat": -26, "lon": 134},
+                    height=500,
+                    title="Station Risk Map -- dot size = anomaly count",
+                )
+                st.plotly_chart(fig_risk, use_container_width=True)
 
             # Risk table
-            display_risk = station_risk.rename(columns={
+            risk_cols = {
                 "station_name":      "Station",
                 "state":             "State",
                 "total_observations":"Total Obs",
                 "anomaly_count":     "Anomalies",
-                "anomaly_rate_pct":  "Anomaly Rate (%)",
+                "anomaly_rate_pct":  "Rate (%)",
                 "severe_count":      "Severe",
                 "moderate_count":    "Moderate",
                 "avg_anomaly_score": "Avg Score",
-                "primary_driver":    "Primary Driver",
-                "station_risk":      "Risk Level",
-            })
-            keep_cols = [
-                "Station", "State", "Total Obs", "Anomalies",
-                "Anomaly Rate (%)", "Severe", "Moderate",
-                "Primary Driver", "Risk Level"
-            ]
-            keep_cols = [c for c in keep_cols if c in display_risk.columns]
+                "primary_driver":    "Driver",
+                "station_risk":      "Risk",
+            }
+            avail_risk = {
+                k: v for k, v in risk_cols.items()
+                if k in station_risk.columns
+            }
+            disp_risk = station_risk[list(avail_risk.keys())].copy()
+            disp_risk.rename(columns=avail_risk, inplace=True)
             st.dataframe(
-                display_risk[keep_cols].sort_values(
-                    "Anomalies", ascending=False
-                ),
-                width='stretch',
+                disp_risk.sort_values("Anomalies", ascending=False)
+                if "Anomalies" in disp_risk.columns else disp_risk,
+                use_container_width=True,
                 hide_index=True,
             )
 
-        # Anomalous observations detail
+        # Top anomalies table
         st.subheader("Most Anomalous Observations")
-        detail_cols = [
+        detail_cols = [c for c in [
             "station_name", "state", "temperature_c",
             "feels_like_c", "humidity_pct", "wind_speed_kmh",
             "ml_anomaly_score", "ml_severity", "ml_primary_driver"
-        ]
-        detail_cols = [c for c in detail_cols if c in ml_df.columns]
+        ] if c in df.columns]
 
-        top_anomalies = (
+        top_anom = (
             ml_df[detail_cols]
             .sort_values("ml_anomaly_score")
             .head(20)
             .rename(columns={
                 "station_name":      "Station",
                 "state":             "State",
-                "temperature_c":     "Temp (°C)",
-                "feels_like_c":      "Feels Like (°C)",
+                "temperature_c":     "Temp (C)",
+                "feels_like_c":      "Feels Like (C)",
                 "humidity_pct":      "Humidity (%)",
                 "wind_speed_kmh":    "Wind (km/h)",
-                "ml_anomaly_score":  "Anomaly Score",
+                "ml_anomaly_score":  "Score",
                 "ml_severity":       "Severity",
-                "ml_primary_driver": "Primary Driver",
+                "ml_primary_driver": "Driver (Phase 2)",
             })
         )
-        st.dataframe(
-            top_anomalies,
-            width='stretch',
-            hide_index=True,
-        )
+        st.dataframe(top_anom, use_container_width=True, hide_index=True)
 
-        st.caption(
-            "Anomaly Score: more negative = more anomalous. "
-            "Primary Driver: the climate variable contributing "
-            "most to the anomaly flag (full SHAP attribution in Phase 3)."
+    # ── BARRA2 statistical anomalies ──────────────────────────────
+    elif anomaly_available:
+        st.info(
+            "Showing BARRA2-based anomalies. "
+            "ML Isolation Forest layer adds more detail."
         )
-        st.divider()
-
-    if anomaly_available:
-        # ── BARRA2-based anomalies ────────────────────────────────
-        st.success(
-            "BARRA2 historical baseline loaded. Anomalies show "
-            "deviation from historical climate norms."
-        )
-
         anom_df = (
-            df.groupby("station_name")
-            .agg({
-                "temp_anomaly_c":       "mean",
-                "humidity_anomaly_pct": "mean",
-                "wind_anomaly_kmh":     "mean",
-                "pressure_anomaly_hpa": "mean",
-                "state":                "first",
-            })
-            .reset_index()
-            .dropna(subset=["temp_anomaly_c"])
+            df.groupby("station_name")["temp_anomaly_c"]
+            .mean().dropna().reset_index()
+            .sort_values("temp_anomaly_c", ascending=False)
         )
-        anom_df["temp_anomaly_c"] = anom_df["temp_anomaly_c"].round(2)
-
         anom_df["status"] = anom_df["temp_anomaly_c"].apply(
             lambda v:
-            "🔴 Much warmer" if v >  3 else
-            "🟠 Warmer"      if v >  1 else
-            "🔵 Cooler"      if v < -1 else
-            "🟢 Normal"
+            "Much warmer" if v >  3 else
+            "Warmer"      if v >  1 else
+            "Cooler"      if v < -1 else
+            "Normal"
         )
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Much warmer (>3°C)",
-                  len(anom_df[anom_df["temp_anomaly_c"] > 3]))
-        c2.metric("Warmer than normal",
-                  len(anom_df[anom_df["temp_anomaly_c"] > 1]))
-        c3.metric("Near normal",
-                  len(anom_df[anom_df["temp_anomaly_c"].abs() <= 1]))
-        c4.metric("Cooler than normal",
-                  len(anom_df[anom_df["temp_anomaly_c"] < -1]))
-
-        st.divider()
-
-        # Temperature anomaly chart
-        top_anom = anom_df.reindex(
-            anom_df["temp_anomaly_c"].abs().sort_values(
-                ascending=False
-            ).index
-        ).head(40)
-
-        fig_anom = px.bar(
-            top_anom,
-            x="station_name",
-            y="temp_anomaly_c",
+        fig_a = px.bar(
+            anom_df.head(40),
+            x="station_name", y="temp_anomaly_c",
             color="temp_anomaly_c",
             color_continuous_scale="RdBu_r",
             color_continuous_midpoint=0,
-            title="Temperature Anomaly vs BARRA2 Historical Baseline (°C) "
-                  "- Top 40 Stations by Magnitude",
-            height=440,
-            labels={
-                "temp_anomaly_c":  "Anomaly (°C)",
-                "station_name":    "Station",
-            }
+            title="Temperature Anomaly vs BARRA2 Historical Baseline",
+            height=420,
         )
-        fig_anom.add_hline(
-            y=0, line_dash="solid",
-            line_color="white", opacity=0.2
-        )
-        fig_anom.add_hline(
-            y=3, line_dash="dash",
-            line_color="red", opacity=0.4,
-            annotation_text="+3°C threshold"
-        )
-        fig_anom.add_hline(
-            y=-3, line_dash="dash",
-            line_color="blue", opacity=0.4,
-            annotation_text="-3°C threshold"
-        )
-        fig_anom.update_layout(
+        fig_a.add_hline(y=0, line_color="white", opacity=0.2)
+        fig_a.update_layout(
             xaxis_tickangle=-45,
             plot_bgcolor=PLOT_BG,
             paper_bgcolor=PLOT_BG,
-            coloraxis_colorbar=dict(title="Anomaly (°C)"),
         )
-        st.plotly_chart(fig_anom, width='stretch')
-
-        # Multi-variable anomaly
-        st.subheader("Multi-Variable Anomaly Overview")
-        anomaly_var_opts = {}
-        for col, lbl in {
-            "temp_anomaly_c":       "Temperature Anomaly (°C)",
-            "humidity_anomaly_pct": "Humidity Anomaly (%)",
-            "wind_anomaly_kmh":     "Wind Anomaly (km/h)",
-            "pressure_anomaly_hpa": "Pressure Anomaly (hPa)",
-        }.items():
-            if col in df.columns and df[col].notna().any():
-                anomaly_var_opts[lbl] = col
-
-        if len(anomaly_var_opts) > 1:
-            selected_anom_var = st.selectbox(
-                "Anomaly variable", list(anomaly_var_opts.keys())
-            )
-            anom_col = anomaly_var_opts[selected_anom_var]
-            av_df = (
-                df.groupby("station_name")[anom_col]
-                .mean().dropna().reset_index()
-                .sort_values(anom_col, ascending=False)
-            )
-            fig_av = px.bar(
-                av_df.head(40),
-                x="station_name", y=anom_col,
-                color=anom_col,
-                color_continuous_scale="RdBu_r",
-                color_continuous_midpoint=0,
-                height=380,
-                title=f"{selected_anom_var} - Top 40 Stations",
-                labels={"station_name": "Station", anom_col: selected_anom_var}
-            )
-            fig_av.add_hline(y=0, line_color="white", opacity=0.2)
-            fig_av.update_layout(
-                xaxis_tickangle=-45,
-                plot_bgcolor=PLOT_BG,
-                paper_bgcolor=PLOT_BG,
-                coloraxis_colorbar=dict(title=selected_anom_var),
-            )
-            st.plotly_chart(fig_av, width='stretch')
-
-        # Anomaly detail table
-        st.subheader("Anomaly Detail Table")
-        display_anom = anom_df.rename(columns={
-            "station_name":       "Station",
-            "state":              "State",
-            "temp_anomaly_c":     "Temp Anomaly (°C)",
-            "humidity_anomaly_pct": "Humidity Anomaly (%)",
-            "wind_anomaly_kmh":   "Wind Anomaly (km/h)",
-            "pressure_anomaly_hpa":"Pressure Anomaly (hPa)",
-            "status":             "Status",
-        })
-        st.dataframe(
-            display_anom.sort_values(
-                "Temp Anomaly (°C)", ascending=False
-            ),
-            width='stretch',
-            hide_index=True,
-        )
+        st.plotly_chart(fig_a, use_container_width=True)
 
     else:
-        # ── BARRA2 not available - statistical outliers ───────────
+        # No ML or BARRA2 -- use z-score fallback
         st.info(
-            "BARRA2 historical baseline is not yet loaded. "
             "Showing statistical outliers from live BOM data. "
-            "Once BARRA2 connects, BARRA2-based anomaly columns "
-            "will populate automatically."
+            "Run `python main.py` to enable ML anomaly detection."
         )
-
-        if "temperature_c" not in df.columns:
-            st.warning("No temperature data available.")
-        else:
-            temp_col = pd.to_numeric(df["temperature_c"], errors="coerce")
-            t_mean   = temp_col.mean()
-            t_std    = temp_col.std()
+        if "temperature_c" in df.columns:
+            temps = pd.to_numeric(df["temperature_c"], errors="coerce")
+            t_mean = temps.mean()
+            t_std  = temps.std()
 
             outlier_df = (
                 df.groupby("station_name")
-                .agg({
-                    "temperature_c": "mean",
-                    "humidity_pct":  "mean",
-                    "wind_speed_kmh":"mean",
-                    "state":         "first",
-                })
+                .agg(
+                    temperature_c=("temperature_c", "mean"),
+                    state=("state", "first"),
+                )
                 .reset_index()
             )
-            for col in ["temperature_c", "humidity_pct", "wind_speed_kmh"]:
-                outlier_df[col] = pd.to_numeric(
-                    outlier_df[col], errors="coerce"
-                ).round(1)
-
+            outlier_df["temperature_c"] = pd.to_numeric(
+                outlier_df["temperature_c"], errors="coerce"
+            )
             outlier_df["z_score"] = (
                 (outlier_df["temperature_c"] - t_mean) / t_std
             ).round(2)
             outlier_df["flag"] = outlier_df["z_score"].apply(
                 lambda z:
-                "🔴 Hot outlier"  if z >  2 else
-                "🔵 Cold outlier" if z < -2 else
-                "🟢 Normal"
+                "Hot outlier"  if z >  2 else
+                "Cold outlier" if z < -2 else
+                "Normal"
             )
 
-            hot   = outlier_df[outlier_df["z_score"] >  2]
-            cold  = outlier_df[outlier_df["z_score"] < -2]
-            norm  = outlier_df[outlier_df["z_score"].abs() <= 2]
+            hot  = outlier_df[outlier_df["z_score"] >  2]
+            cold = outlier_df[outlier_df["z_score"] < -2]
 
             c1, c2, c3 = st.columns(3)
-            c1.metric("🔴 Hot outliers",  len(hot))
-            c2.metric("🟢 Normal range",  len(norm))
-            c3.metric("🔵 Cold outliers", len(cold))
-
-            st.divider()
-
-            # Z-score chart
-            plot_df = outlier_df.sort_values(
-                "z_score", ascending=False
-            ).head(50)
+            c1.metric("Hot outliers",  len(hot))
+            c2.metric("Normal range",  len(outlier_df) - len(hot) - len(cold))
+            c3.metric("Cold outliers", len(cold))
 
             fig_z = px.bar(
-                plot_df,
-                x="station_name",
-                y="z_score",
+                outlier_df.sort_values("z_score", ascending=False).head(50),
+                x="station_name", y="z_score",
                 color="z_score",
                 color_continuous_scale="RdBu_r",
                 color_continuous_midpoint=0,
-                title="Temperature Z-Scores - Top 50 Stations "
-                      "(|z| > 2 = statistical outlier)",
+                title="Temperature Z-Scores (top 50 stations)",
                 height=440,
                 text_auto=".1f",
-                labels={
-                    "z_score":      "Z-Score",
-                    "station_name": "Station",
-                }
             )
-            fig_z.add_hline(
-                y=2,  line_dash="dash",
-                line_color="red",  opacity=0.5,
-                annotation_text="+2σ"
-            )
-            fig_z.add_hline(
-                y=-2, line_dash="dash",
-                line_color="blue", opacity=0.5,
-                annotation_text="-2σ"
-            )
-            fig_z.add_hline(
-                y=0, line_color="white", opacity=0.15
-            )
+            fig_z.add_hline(y=2,  line_dash="dash",
+                            line_color="red",  opacity=0.5)
+            fig_z.add_hline(y=-2, line_dash="dash",
+                            line_color="blue", opacity=0.5)
+            fig_z.add_hline(y=0, line_color="white", opacity=0.15)
             fig_z.update_layout(
                 xaxis_tickangle=-45,
                 plot_bgcolor=PLOT_BG,
                 paper_bgcolor=PLOT_BG,
-                coloraxis_colorbar=dict(title="Z-Score"),
             )
-            st.plotly_chart(fig_z, width='stretch')
+            st.plotly_chart(fig_z, use_container_width=True)
 
-            # Top outlier tables
-            st.divider()
-            col_left, col_right = st.columns(2)
-            with col_left:
-                st.markdown("**🔴 Hottest outlier stations**")
-                if not hot.empty:
-                    st.dataframe(
-                        hot[["station_name", "state",
-                             "temperature_c", "z_score"]]
-                        .sort_values("z_score", ascending=False)
-                        .rename(columns={
-                            "station_name":  "Station",
-                            "state":         "State",
-                            "temperature_c": "Avg Temp (°C)",
-                            "z_score":       "Z-Score",
-                        }),
-                        width='stretch',
-                        hide_index=True,
+    # ── SHAP Phase 3 (appended at bottom of tab regardless of path) ────
+    if shap_available:
+        st.divider()
+        st.subheader("Phase 3 -- SHAP Explainability")
+        st.caption(
+            "Shapley values show exactly how much each climate variable "
+            "contributed to every anomaly score. Values are additive and "
+            "sum to the total anomaly score. "
+            "More negative = stronger push toward anomalous."
+        )
+
+        feat_labels = {
+            "temperature_c":  "Temperature",
+            "feels_like_c":   "Apparent Temp",
+            "humidity_pct":   "Humidity",
+            "wind_speed_kmh": "Wind Speed",
+            "pressure_hpa":   "Pressure",
+        }
+        feat_units = {
+            "temperature_c":  "C",
+            "feels_like_c":   "C",
+            "humidity_pct":   "%",
+            "wind_speed_kmh": "km/h",
+            "pressure_hpa":   "hPa",
+        }
+        shap_feat_cols = [
+            c for c in df.columns
+            if c.startswith("shap_")
+            and c not in [
+                "shap_top_driver", "shap_top_driver_val",
+                "shap_explanation", "shap_computed"
+            ]
+        ]
+
+        # Global importance bar chart
+        if not df_shap_global.empty:
+            st.markdown("**Global Feature Importance Across All Anomalies**")
+            fig_gimp = px.bar(
+                df_shap_global,
+                x="mean_abs_shap",
+                y="label",
+                orientation="h",
+                color="mean_abs_shap",
+                color_continuous_scale="RdYlBu_r",
+                text=df_shap_global["mean_abs_shap"].round(4).astype(str),
+                height=300,
+                labels={
+                    "mean_abs_shap": "Mean |SHAP|",
+                    "label":         "Variable",
+                }
+            )
+            fig_gimp.update_traces(textposition="outside")
+            fig_gimp.update_layout(
+                coloraxis_showscale=False,
+                plot_bgcolor=PLOT_BG,
+                paper_bgcolor=PLOT_BG,
+                xaxis_title="Mean Absolute SHAP Contribution",
+                yaxis_title="",
+            )
+            st.plotly_chart(fig_gimp, use_container_width=True)
+
+        # Beeswarm scatter
+        if shap_feat_cols and "ml_anomaly_flag" in df.columns:
+            st.markdown(
+                "**SHAP Distribution -- All Anomalous Observations**"
+            )
+            st.caption(
+                "Each dot is one anomalous observation. "
+                "X-axis = SHAP contribution (negative = anomaly driver). "
+                "Colour = actual value of that variable."
+            )
+            anom_df_shap = df[df["ml_anomaly_flag"] == True].copy()
+            shap_long_rows = []
+            for shap_col in shap_feat_cols:
+                feat  = shap_col.replace("shap_", "")
+                label = feat_labels.get(feat, feat)
+                unit  = feat_units.get(feat, "")
+                if shap_col in anom_df_shap.columns and feat in anom_df_shap.columns:
+                    sub = anom_df_shap[[
+                        shap_col, feat, "station_name"
+                    ]].dropna().copy()
+                    sub = sub.rename(columns={
+                        shap_col: "shap_value",
+                        feat:     "feature_value",
+                    })
+                    sub["feature"] = label
+                    shap_long_rows.append(sub)
+
+            if shap_long_rows:
+                shap_long = pd.concat(shap_long_rows, ignore_index=True)
+                fig_bee = px.scatter(
+                    shap_long,
+                    x="shap_value",
+                    y="feature",
+                    color="feature_value",
+                    color_continuous_scale="RdYlBu_r",
+                    opacity=0.4,
+                    height=360,
+                    hover_data={
+                        "station_name":  True,
+                        "shap_value":    ":.5f",
+                        "feature_value": ":.2f",
+                        "feature":       False,
+                    },
+                    labels={
+                        "shap_value":    "SHAP Contribution",
+                        "feature":       "Variable",
+                        "feature_value": "Actual Value",
+                    }
+                )
+                fig_bee.add_vline(
+                    x=0,
+                    line_dash="solid",
+                    line_color="white",
+                    opacity=0.3,
+                )
+                fig_bee.update_layout(
+                    plot_bgcolor=PLOT_BG,
+                    paper_bgcolor=PLOT_BG,
+                    coloraxis_colorbar=dict(title="Value"),
+                )
+                st.plotly_chart(fig_bee, use_container_width=True)
+
+        # Waterfall chart for individual station
+        st.markdown("**Station Waterfall Chart**")
+        st.caption(
+            "Select a station to see how each variable contributed "
+            "to its anomaly score."
+        )
+
+        anomaly_stations = df[
+            (df["ml_anomaly_flag"] == True) &
+            (df["shap_computed"] == True)
+        ]["station_name"].dropna().unique().tolist() \
+            if "shap_computed" in df.columns else []
+
+        if anomaly_stations:
+            selected_stn = st.selectbox(
+                "Select anomalous station",
+                options=sorted(anomaly_stations),
+                key="shap_stn_sel"
+            )
+            stn_rows = df[
+                (df["station_name"] == selected_stn) &
+                (df["ml_anomaly_flag"] == True)
+            ].sort_values("ml_anomaly_score")
+
+            if not stn_rows.empty:
+                top_row    = stn_rows.iloc[0]
+                wf_labels  = []
+                wf_values  = []
+
+                for shap_col in shap_feat_cols:
+                    feat  = shap_col.replace("shap_", "")
+                    label = feat_labels.get(feat, feat)
+                    unit  = feat_units.get(feat, "")
+                    if shap_col in top_row.index:
+                        sv  = float(top_row[shap_col])
+                        av  = float(top_row[feat]) \
+                            if feat in top_row.index else np.nan
+                        avs = f"{av:.1f}{unit}" \
+                            if not np.isnan(av) else "N/A"
+                        wf_labels.append(f"{label}<br>({avs})")
+                        wf_values.append(sv)
+
+                if wf_values:
+                    pairs = sorted(zip(wf_labels, wf_values),
+                                   key=lambda x: x[1])
+                    wl = [p[0] for p in pairs]
+                    wv = [p[1] for p in pairs]
+                    colors = [
+                        "#ef4444" if v < 0 else "#22c55e"
+                        for v in wv
+                    ]
+                    score = float(top_row["ml_anomaly_score"])
+                    fig_wf = go.Figure(go.Bar(
+                        x=wl, y=wv,
+                        marker_color=colors,
+                        text=[f"{v:+.4f}" for v in wv],
+                        textposition="outside",
+                    ))
+                    fig_wf.add_hline(y=0, line_color="white", opacity=0.3)
+                    fig_wf.update_layout(
+                        title=f"SHAP Waterfall -- {selected_stn} "
+                              f"(anomaly score: {score:.4f})",
+                        height=400,
+                        plot_bgcolor=PLOT_BG,
+                        paper_bgcolor=PLOT_BG,
+                        yaxis_title="SHAP Contribution",
+                        showlegend=False,
                     )
-                else:
-                    st.caption("No hot outliers in current selection.")
+                    st.plotly_chart(fig_wf, use_container_width=True)
 
-            with col_right:
-                st.markdown("**🔵 Coldest outlier stations**")
-                if not cold.empty:
-                    st.dataframe(
-                        cold[["station_name", "state",
-                              "temperature_c", "z_score"]]
-                        .sort_values("z_score")
-                        .rename(columns={
-                            "station_name":  "Station",
-                            "state":         "State",
-                            "temperature_c": "Avg Temp (°C)",
-                            "z_score":       "Z-Score",
-                        }),
-                        width='stretch',
-                        hide_index=True,
-                    )
-                else:
-                    st.caption("No cold outliers in current selection.")
+                    expl = top_row.get("shap_explanation", "")
+                    if expl:
+                        st.info(f"Explanation: {expl}")
 
+        # SHAP explanation table
+        st.markdown("**Top 20 Anomalies with SHAP Explanations**")
+        expl_cols = [c for c in [
+            "station_name", "state",
+            "temperature_c", "humidity_pct",
+            "ml_anomaly_score", "ml_severity",
+            "shap_top_driver", "shap_top_driver_val",
+            "shap_explanation",
+        ] if c in df.columns]
+
+        expl_df = (
+            df[df["shap_computed"] == True][expl_cols]
+            .sort_values("ml_anomaly_score")
+            .head(20)
+            .rename(columns={
+                "station_name":      "Station",
+                "state":             "State",
+                "temperature_c":     "Temp (C)",
+                "humidity_pct":      "Humidity (%)",
+                "ml_anomaly_score":  "Score",
+                "ml_severity":       "Severity",
+                "shap_top_driver":   "Top Driver",
+                "shap_top_driver_val":"Driver Value",
+                "shap_explanation":  "SHAP Explanation",
+            })
+        ) if "shap_computed" in df.columns else pd.DataFrame()
+
+        if not expl_df.empty:
+            st.dataframe(
+                expl_df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        st.caption(
+            "Score: more negative = more anomalous. "
+            "Red bars = variables pushing toward anomalous. "
+            "Green bars = variables pulling toward normal."
+        )
+    elif ml_available:
+        st.info(
+            "SHAP Phase 3 will appear here after the next pipeline run. "
+            "Run: python main.py"
+        )
+                    
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 4: BARRA2 COMPARISON
@@ -1519,7 +1615,312 @@ with tab5:
         else:
             st.info("No merged data available.")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 6 -- ENERGY (AEMO)
+# ─────────────────────────────────────────────────────────────────────────────
+with tab6:
+    st.subheader("Energy Demand vs Climate Conditions")
+    st.caption(
+        "Australian Energy Market Operator (AEMO) 5-minute dispatch data "
+        "for NEM regions, overlaid with live BOM temperature readings. "
+        "WA and NT operate separate electricity markets and are not shown."
+    )
 
+    aemo_available = (
+        not df_aemo.empty
+        and "total_demand_mw" in df_aemo.columns
+        and df_aemo["total_demand_mw"].notna().any()
+    )
+
+    # Refresh button
+    if st.button("Refresh AEMO Data", key="aemo_refresh"):
+        with st.spinner("Fetching latest AEMO dispatch..."):
+            try:
+                from ingestion.aemo import fetch_aemo_dispatch, merge_aemo_with_bom
+                from pipeline.storage import save_parquet as sp
+
+                new_aemo   = fetch_aemo_dispatch(force_refresh=True)
+                sp(new_aemo, "data/processed/aemo_latest.parquet")
+
+                new_merged = merge_aemo_with_bom(df, new_aemo)
+                if not new_merged.empty:
+                    sp(new_merged, "data/processed/aemo_bom_merged.parquet")
+
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"AEMO refresh failed: {e}")
+
+    if not aemo_available:
+        st.info(
+            "AEMO dispatch data is not yet loaded or is showing placeholder values. "
+            "Click Refresh above or run `python main.py` to fetch fresh data."
+        )
+        st.markdown("""
+        **What this tab shows when AEMO loads:**
+        - Current electricity demand (MW) per NEM region
+        - Regional spot price ($/MWh) per region
+        - Temperature vs demand correlation chart
+        - Rolling demand history over the last 7 days
+        """)
+
+        # Show BOM summary in the meantime
+        st.subheader("Current BOM Station Summary")
+        if not summary.empty:
+            cols_map = {
+                "station_name":       "Station",
+                "state":              "State",
+                "mean_temperature_c": "Avg Temp (C)",
+                "max_temperature_c":  "Max Temp (C)",
+                "mean_humidity_pct":  "Avg Humidity (%)",
+                "mean_wind_speed_kmh":"Avg Wind (km/h)",
+                "record_count":       "Records",
+            }
+            avail = {k: v for k, v in cols_map.items() if k in summary.columns}
+            disp  = summary[list(avail.keys())].copy()
+            disp.rename(columns=avail, inplace=True)
+            for col in ["Avg Temp (C)", "Max Temp (C)",
+                        "Avg Humidity (%)", "Avg Wind (km/h)"]:
+                if col in disp.columns:
+                    disp[col] = pd.to_numeric(
+                        disp[col], errors="coerce"
+                    ).round(1)
+            st.dataframe(
+                disp.sort_values("Avg Temp (C)", ascending=False)
+                if "Avg Temp (C)" in disp.columns else disp,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    else:
+        # Top metrics
+        total_dem      = df_aemo["total_demand_mw"].sum()
+        has_price      = "rrp_per_mwh" in df_aemo.columns and df_aemo["rrp_per_mwh"].notna().any()
+        max_price      = df_aemo["rrp_per_mwh"].max() if has_price else 0
+        max_price_rgn  = ""
+        if has_price:
+            idx = df_aemo["rrp_per_mwh"].idxmax()
+            max_price_rgn = df_aemo.loc[idx, "region_name"] \
+                if "region_name" in df_aemo.columns else ""
+
+        settle_str = ""
+        if "settlement_date" in df_aemo.columns:
+            t = df_aemo["settlement_date"].dropna()
+            if not t.empty:
+                settle_str = str(t.iloc[0])[:16]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total NEM Demand",  f"{total_dem:,.0f} MW")
+        c2.metric("Highest Spot Price", f"${max_price:,.0f}/MWh", max_price_rgn)
+        c3.metric("NEM Regions",       "5")
+        c4.metric("Last Updated",      settle_str or "Just now")
+
+        st.divider()
+
+        col_l, col_r = st.columns(2)
+
+        with col_l:
+            st.subheader("Current Demand by Region")
+            dem_df = df_aemo.dropna(subset=["total_demand_mw"]).copy()
+            dem_df = dem_df.sort_values("total_demand_mw", ascending=False)
+            x_col  = "region_name" if "region_name" in dem_df.columns else "region"
+
+            fig_dem = px.bar(
+                dem_df, x=x_col, y="total_demand_mw",
+                color="total_demand_mw",
+                color_continuous_scale="YlOrRd",
+                text_auto=".0f", height=360,
+                labels={"total_demand_mw": "Demand (MW)", x_col: "Region"}
+            )
+            fig_dem.update_traces(textposition="outside")
+            fig_dem.update_layout(
+                coloraxis_showscale=False,
+                plot_bgcolor=PLOT_BG,
+                paper_bgcolor=PLOT_BG,
+                xaxis_title="",
+            )
+            st.plotly_chart(fig_dem, use_container_width=True)
+
+        with col_r:
+            st.subheader("Spot Price by Region")
+            if has_price:
+                pr_df  = df_aemo.dropna(subset=["rrp_per_mwh"]).copy()
+                pr_df  = pr_df.sort_values("rrp_per_mwh", ascending=False)
+                x_col2 = "region_name" if "region_name" in pr_df.columns else "region"
+
+                fig_pr = px.bar(
+                    pr_df, x=x_col2, y="rrp_per_mwh",
+                    color="rrp_per_mwh",
+                    color_continuous_scale="RdYlGn_r",
+                    text_auto=".0f", height=360,
+                    labels={"rrp_per_mwh": "Spot Price ($/MWh)", x_col2: "Region"}
+                )
+                fig_pr.update_traces(textposition="outside")
+                fig_pr.update_layout(
+                    coloraxis_showscale=False,
+                    plot_bgcolor=PLOT_BG,
+                    paper_bgcolor=PLOT_BG,
+                    xaxis_title="",
+                )
+                st.plotly_chart(fig_pr, use_container_width=True)
+            else:
+                st.info("Spot price data not available in this fetch.")
+
+        st.divider()
+
+        # Temperature vs demand correlation
+        st.subheader("Temperature vs Electricity Demand")
+        st.caption(
+            "Each dot is a NEM region. Shows how temperature drives "
+            "electricity demand across Australia right now."
+        )
+
+        if (not df_aemo_bom.empty
+                and "avg_temp_c" in df_aemo_bom.columns
+                and "total_demand_mw" in df_aemo_bom.columns):
+
+            corr_df = df_aemo_bom.dropna(
+                subset=["avg_temp_c", "total_demand_mw"]
+            )
+
+            if not corr_df.empty:
+                x_label = "region_name" \
+                    if "region_name" in corr_df.columns else "region"
+
+                # Build hover_data only from columns that actually exist
+                hover = {}
+                if "region" in corr_df.columns:
+                    hover["region"] = True
+                if "avg_temp_c" in corr_df.columns:
+                    hover["avg_temp_c"] = ":.1f"
+                if "total_demand_mw" in corr_df.columns:
+                    hover["total_demand_mw"] = ":,.0f"
+                if "rrp_per_mwh" in corr_df.columns:
+                    hover["rrp_per_mwh"] = ":,.0f"
+                if "station_count" in corr_df.columns:
+                    hover["station_count"] = True
+                if "states" in corr_df.columns:
+                    hover["states"] = True
+
+                fig_corr = px.scatter(
+                    corr_df,
+                    x="avg_temp_c",
+                    y="total_demand_mw",
+                    text=x_label,
+                    size=[40] * len(corr_df),
+                    color="total_demand_mw",
+                    color_continuous_scale="YlOrRd",
+                    hover_data=hover,
+                    height=420,
+                    labels={
+                        "avg_temp_c":      "Average Temperature (C)",
+                        "total_demand_mw": "Electricity Demand (MW)",
+                    }
+                )
+                fig_corr.update_traces(
+                    textposition="top center",
+                    marker=dict(
+                        opacity=0.85,
+                        line=dict(width=1, color="white")
+                    )
+                )
+                fig_corr.update_layout(
+                    coloraxis_showscale=False,
+                    plot_bgcolor=PLOT_BG,
+                    paper_bgcolor=PLOT_BG,
+                )
+                st.plotly_chart(fig_corr, use_container_width=True)
+            else:
+                st.info("Not enough data to show correlation chart.")
+        else:
+            st.info(
+                "Temperature-demand correlation requires both BOM and "
+                "AEMO data to be loaded. Run `python main.py` first."
+            )
+
+        # Demand history
+        if (not df_aemo_history.empty
+                and "settlement_date" in df_aemo_history.columns):
+            st.divider()
+            st.subheader("Demand History (Rolling 7 Days)")
+
+            hist = df_aemo_history.copy()
+            hist["settlement_date"] = pd.to_datetime(
+                hist["settlement_date"], errors="coerce"
+            )
+            hist["total_demand_mw"] = pd.to_numeric(
+                hist["total_demand_mw"], errors="coerce"
+            )
+            hist = hist.dropna(subset=["settlement_date", "total_demand_mw"])
+
+            if not hist.empty:
+                clr_col = "region_name" \
+                    if "region_name" in hist.columns else "region"
+
+                region_opts = hist[clr_col].dropna().unique().tolist()
+                sel_regions = st.multiselect(
+                    "Regions",
+                    options=region_opts,
+                    default=region_opts[:3],
+                    key="aemo_hist_sel"
+                )
+
+                hist_f = hist[hist[clr_col].isin(sel_regions)] \
+                    if sel_regions else hist
+
+                fig_hist = px.line(
+                    hist_f.sort_values("settlement_date"),
+                    x="settlement_date",
+                    y="total_demand_mw",
+                    color=clr_col,
+                    height=360,
+                    title="NEM Regional Demand Over Time",
+                    labels={
+                        "settlement_date": "Time",
+                        "total_demand_mw": "Demand (MW)",
+                        clr_col:           "Region",
+                    }
+                )
+                fig_hist.update_layout(
+                    plot_bgcolor=PLOT_BG,
+                    paper_bgcolor=PLOT_BG,
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
+
+        # Region detail table
+        st.divider()
+        st.subheader("Region Detail")
+
+        display_src = df_aemo_bom if not df_aemo_bom.empty else df_aemo
+        col_map = {
+            "region":          "Region ID",
+            "region_name":     "Region",
+            "states":          "States",
+            "total_demand_mw": "Demand (MW)",
+            "rrp_per_mwh":     "Spot Price ($/MWh)",
+            "avg_temp_c":      "Avg Temp (C)",
+            "max_temp_c":      "Max Temp (C)",
+            "station_count":   "BOM Stations",
+        }
+        avail = {k: v for k, v in col_map.items() if k in display_src.columns}
+        if avail:
+            disp2 = display_src[list(avail.keys())].copy()
+            disp2.rename(columns=avail, inplace=True)
+            for col in ["Demand (MW)", "Spot Price ($/MWh)",
+                        "Avg Temp (C)", "Max Temp (C)"]:
+                if col in disp2.columns:
+                    disp2[col] = pd.to_numeric(
+                        disp2[col], errors="coerce"
+                    ).round(1)
+            st.dataframe(disp2, use_container_width=True, hide_index=True)
+
+        st.caption(
+            "Source: AEMO NEMWeb public dispatch data | "
+            "Updated every 5 minutes | "
+            "CC-BY 4.0 | "
+            "nemweb.com.au/Reports/Current/DispatchIS_Reports/"
+        )
+        
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 col_f1, col_f2 = st.columns([3, 1])
