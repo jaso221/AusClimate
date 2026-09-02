@@ -201,13 +201,19 @@ def run_pipeline(force_refresh: bool = False,
     )
     ml_flags = (
         int(df_merged["ml_anomaly_flag"].sum())
-        if "ml_anomaly_flag" in df_merged.columns
-        else 0
+        if "ml_anomaly_flag" in df_merged.columns else 0
     )
     ml_severe = (
         int((df_merged["ml_severity"] == "Severe").sum())
-        if "ml_severity" in df_merged.columns
-        else 0
+        if "ml_severity" in df_merged.columns else 0
+    )
+    lof_flags = (
+        int(df_merged["lof_anomaly_flag"].sum())
+        if "lof_anomaly_flag" in df_merged.columns else 0
+    )
+    ensemble_flags = (
+        int(df_merged["ensemble_anomaly"].sum())
+        if "ensemble_anomaly" in df_merged.columns else 0
     )
     anomaly_cols = [
         c for c in df_merged.columns if "anomaly" in c.lower()
@@ -233,6 +239,8 @@ def run_pipeline(force_refresh: bool = False,
     print(f"  Anomaly columns      : {len(anomaly_cols)}")
     print(f"  ML anomalies flagged : {ml_flags:,}")
     print(f"  ML severe flags      : {ml_severe}")
+    print(f"  LOF anomalies flagged: {lof_flags:,}")   
+    print(f"  Ensemble (both agree): {ensemble_flags:,}")
     print(f"  Station summaries    : {len(df_summary)}")
     print("=" * 60)
 
