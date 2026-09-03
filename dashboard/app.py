@@ -14,6 +14,459 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
+# ── Theme system ──────────────────────────────────────────────────────────────
+
+THEMES = {
+    "dark": {
+        "bg_primary":    "#0A0F1E",
+        "bg_card":       "#0F1729",
+        "bg_sidebar":    "#080D1A",
+        "bg_input":      "#131D33",
+        "text_primary":  "#E8EDF5",
+        "text_secondary":"#7B8FAD",
+        "text_muted":    "#4A5C78",
+        "border":        "#1E2D4A",
+        "border_hover":  "#2E4270",
+        "accent":        "#1B6CF7",
+        "accent_hover":  "#3B82F6",
+        "success":       "#0EA472",
+        "warning":       "#E6A817",
+        "critical":      "#E53935",
+        "plot_bg":       "rgba(0,0,0,0)",
+        "paper_bg":      "rgba(0,0,0,0)",
+        "plotly_tmpl":   "plotly_dark",
+        "grid_color":    "rgba(255,255,255,0.04)",
+        "axis_color":    "rgba(255,255,255,0.08)",
+    },
+    "light": {
+        "bg_primary":    "#F0F4FA",
+        "bg_card":       "#FFFFFF",
+        "bg_sidebar":    "#E8EEF8",
+        "bg_input":      "#F5F8FF",
+        "text_primary":  "#0D1B35",
+        "text_secondary":"#4A5C78",
+        "text_muted":    "#8A9BB8",
+        "border":        "#C5D2E8",
+        "border_hover":  "#94AAD4",
+        "accent":        "#1550C8",
+        "accent_hover":  "#1B6CF7",
+        "success":       "#0A7A57",
+        "warning":       "#B5690A",
+        "critical":      "#C41E1E",
+        "plot_bg":       "rgba(0,0,0,0)",
+        "paper_bg":      "rgba(0,0,0,0)",
+        "plotly_tmpl":   "plotly_white",
+        "grid_color":    "rgba(0,0,0,0.04)",
+        "axis_color":    "rgba(0,0,0,0.08)",
+    },
+}
+
+# Colour scales that work on both themes
+COLOUR_SCALE_TEMP     = "RdYlBu_r"
+COLOUR_SCALE_DEMAND   = "YlOrRd"
+COLOUR_SCALE_DIVERGE  = "RdBu_r"
+COLOUR_SCALE_BLUE     = "Blues"
+
+# Initialise theme in session state
+if "theme" not in st.session_state:
+    st.session_state.theme = "dark"
+
+T = THEMES[st.session_state.theme]   # shorthand used everywhere below
+
+
+def build_css(T: dict) -> str:
+    """
+    Generate complete CSS for the current theme.
+    All colors are hardcoded from T so there is no dependency on
+    CSS variables or Streamlit's built-in theming.
+    """
+    return f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* ── Reset and base ─────────────────────────────────────────── */
+html, body, [class*="css"] {{
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont,
+                 'Segoe UI', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+}}
+#MainMenu, footer, header {{ visibility: hidden; }}
+
+/* ── App background ──────────────────────────────────────────── */
+.stApp {{
+    background-color: {T["bg_primary"]};
+}}
+
+/* ── Sidebar ─────────────────────────────────────────────────── */
+section[data-testid="stSidebar"] {{
+    background-color: {T["bg_sidebar"]};
+    border-right: 1px solid {T["border"]};
+}}
+section[data-testid="stSidebar"] .stMarkdown p {{
+    color: {T["text_secondary"]};
+    font-size: 12px;
+    line-height: 1.6;
+}}
+section[data-testid="stSidebar"] label {{
+    color: {T["text_secondary"]} !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+}}
+
+/* ── Metric cards ────────────────────────────────────────────── */
+div[data-testid="metric-container"] {{
+    background-color: {T["bg_card"]};
+    border: 1px solid {T["border"]};
+    border-radius: 6px;
+    padding: 16px 20px 14px;
+    transition: border-color 0.15s ease;
+}}
+div[data-testid="metric-container"]:hover {{
+    border-color: {T["border_hover"]};
+}}
+div[data-testid="metric-container"] label {{
+    color: {T["text_secondary"]} !important;
+    font-size: 10px !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.1em !important;
+}}
+div[data-testid="metric-container"] [data-testid="stMetricValue"] {{
+    color: {T["text_primary"]} !important;
+    font-size: 22px !important;
+    font-weight: 600 !important;
+    letter-spacing: -0.02em !important;
+}}
+div[data-testid="metric-container"] [data-testid="stMetricDelta"] {{
+    font-size: 11px !important;
+    color: {T["text_secondary"]} !important;
+}}
+
+/* ── Tabs ────────────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {{
+    background-color: {T["bg_card"]};
+    border-radius: 6px 6px 0 0;
+    padding: 4px 4px 0;
+    border: 1px solid {T["border"]};
+    border-bottom: none;
+    gap: 2px;
+}}
+.stTabs [data-baseweb="tab"] {{
+    background-color: transparent;
+    border-radius: 4px 4px 0 0;
+    color: {T["text_secondary"]};
+    font-size: 12px;
+    font-weight: 500;
+    padding: 8px 14px;
+    border: none;
+    letter-spacing: 0.01em;
+    transition: all 0.15s ease;
+}}
+.stTabs [aria-selected="true"] {{
+    background-color: {T["bg_primary"]} !important;
+    color: {T["text_primary"]} !important;
+    font-weight: 600 !important;
+    border-bottom: 2px solid {T["accent"]} !important;
+}}
+.stTabs [data-baseweb="tab"]:hover {{
+    color: {T["text_primary"]};
+    background-color: {T["bg_primary"]}88;
+}}
+.stTabs [data-baseweb="tab-panel"] {{
+    background-color: {T["bg_primary"]};
+    border: 1px solid {T["border"]};
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    padding: 20px;
+}}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+.stButton > button {{
+    background-color: {T["bg_card"]};
+    border: 1px solid {T["border"]};
+    color: {T["text_secondary"]};
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 14px;
+    transition: all 0.15s ease;
+    letter-spacing: 0.01em;
+}}
+.stButton > button:hover {{
+    background-color: {T["bg_input"]};
+    border-color: {T["accent"]};
+    color: {T["text_primary"]};
+}}
+
+/* ── Select and multiselect ──────────────────────────────────── */
+.stSelectbox [data-baseweb="select"] > div,
+.stMultiSelect [data-baseweb="select"] > div {{
+    background-color: {T["bg_input"]};
+    border: 1px solid {T["border"]};
+    border-radius: 5px;
+    color: {T["text_primary"]};
+    font-size: 13px;
+}}
+
+/* ── Radio buttons ───────────────────────────────────────────── */
+.stRadio label {{
+    color: {T["text_secondary"]} !important;
+    font-size: 12px !important;
+}}
+
+/* ── DataFrames ──────────────────────────────────────────────── */
+.stDataFrame {{
+    border: 1px solid {T["border"]};
+    border-radius: 6px;
+    overflow: hidden;
+}}
+.stDataFrame [data-testid="stDataFrameResizable"] {{
+    background-color: {T["bg_card"]};
+}}
+
+/* ── Alert boxes ─────────────────────────────────────────────── */
+.stSuccess {{
+    background-color: {T["success"]}18;
+    border: 1px solid {T["success"]}50;
+    border-radius: 5px;
+    color: {T["success"]};
+}}
+.stInfo {{
+    background-color: {T["accent"]}15;
+    border: 1px solid {T["accent"]}40;
+    border-radius: 5px;
+    color: {T["accent"]};
+}}
+.stWarning {{
+    background-color: {T["warning"]}18;
+    border: 1px solid {T["warning"]}50;
+    border-radius: 5px;
+    color: {T["warning"]};
+}}
+.stError {{
+    background-color: {T["critical"]}15;
+    border: 1px solid {T["critical"]}40;
+    border-radius: 5px;
+    color: {T["critical"]};
+}}
+
+/* ── Chat messages ───────────────────────────────────────────── */
+[data-testid="stChatMessage"] {{
+    background-color: {T["bg_card"]};
+    border: 1px solid {T["border"]};
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+}}
+[data-testid="stChatInputContainer"] textarea {{
+    background-color: {T["bg_input"]};
+    border: 1px solid {T["border"]};
+    color: {T["text_primary"]};
+    font-size: 13px;
+}}
+
+/* ── Divider ─────────────────────────────────────────────────── */
+hr {{
+    border-color: {T["border"]};
+    margin: 18px 0;
+}}
+
+/* ── Expander ────────────────────────────────────────────────── */
+.streamlit-expanderHeader {{
+    background-color: {T["bg_card"]};
+    border: 1px solid {T["border"]};
+    border-radius: 5px;
+    color: {T["text_secondary"]};
+    font-size: 12px;
+    font-weight: 500;
+}}
+
+/* ── Download button ─────────────────────────────────────────── */
+.stDownloadButton > button {{
+    background-color: {T["accent"]};
+    border: 1px solid {T["accent"]};
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 5px;
+}}
+.stDownloadButton > button:hover {{
+    background-color: {T["accent_hover"]};
+    border-color: {T["accent_hover"]};
+}}
+
+/* ── Scrollbar ───────────────────────────────────────────────── */
+::-webkit-scrollbar {{ width: 5px; height: 5px; }}
+::-webkit-scrollbar-track {{ background: {T["bg_primary"]}; }}
+::-webkit-scrollbar-thumb {{
+    background: {T["border"]};
+    border-radius: 3px;
+}}
+::-webkit-scrollbar-thumb:hover {{ background: {T["border_hover"]}; }}
+
+/* ── Status header ───────────────────────────────────────────── */
+.aus-header {{
+    background-color: {T["bg_card"]};
+    border: 1px solid {T["border"]};
+    border-radius: 6px;
+    padding: 14px 20px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}}
+.aus-header-title {{
+    font-size: 17px;
+    font-weight: 600;
+    color: {T["text_primary"]};
+    letter-spacing: -0.02em;
+}}
+.aus-header-sub {{
+    font-size: 11px;
+    color: {T["text_secondary"]};
+    margin-top: 2px;
+    letter-spacing: 0.01em;
+}}
+.aus-badge {{
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 99px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}}
+.aus-badge-live {{
+    background: {T["success"]}18;
+    color: {T["success"]};
+    border: 1px solid {T["success"]}40;
+}}
+.aus-badge-pending {{
+    background: {T["warning"]}18;
+    color: {T["warning"]};
+    border: 1px solid {T["warning"]}40;
+}}
+.aus-badge-offline {{
+    background: {T["text_muted"]}18;
+    color: {T["text_muted"]};
+    border: 1px solid {T["text_muted"]}40;
+}}
+
+/* ── Section label ───────────────────────────────────────────── */
+.aus-section-label {{
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: {T["text_muted"]};
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid {T["border"]};
+}}
+
+/* ── Sidebar logo area ───────────────────────────────────────── */
+.aus-sidebar-brand {{
+    padding: 4px 0 16px;
+    border-bottom: 1px solid {T["border"]};
+    margin-bottom: 16px;
+}}
+.aus-sidebar-brand-title {{
+    font-size: 16px;
+    font-weight: 700;
+    color: {T["text_primary"]};
+    letter-spacing: -0.02em;
+}}
+.aus-sidebar-brand-sub {{
+    font-size: 10px;
+    color: {T["text_muted"]};
+    letter-spacing: 0.04em;
+    margin-top: 2px;
+}}
+
+/* ── Spinner ─────────────────────────────────────────────────── */
+.stSpinner > div {{
+    border-top-color: {T["accent"]};
+}}
+</style>
+"""
+
+
+# Inject CSS immediately after function definition
+st.markdown(build_css(T), unsafe_allow_html=True)
+
+
+def chart_layout(fig,
+                 title: str = "",
+                 height: int = 400,
+                 xangle: int = 0,
+                 legend: bool = False,
+                 margin: dict = None) -> object:
+    """
+    Apply consistent professional layout to any plotly figure.
+    Respects current theme automatically.
+    """
+    if margin is None:
+        margin = dict(t=44, b=36, l=44, r=16)
+
+    fig.update_layout(
+        title=dict(
+            text=title,
+            font=dict(
+                size=13,
+                color=T["text_primary"],
+                family="Inter, -apple-system, sans-serif"
+            ),
+            x=0,
+            xanchor="left",
+            pad=dict(l=0, t=0),
+        ),
+        plot_bgcolor=T["plot_bg"],
+        paper_bgcolor=T["paper_bg"],
+        font=dict(
+            family="Inter, -apple-system, sans-serif",
+            size=11,
+            color=T["text_secondary"],
+        ),
+        height=height,
+        margin=margin,
+        showlegend=legend,
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            bordercolor=T["border"],
+            borderwidth=1,
+            font=dict(size=11, color=T["text_secondary"]),
+        ),
+        xaxis=dict(
+            gridcolor=T["grid_color"],
+            linecolor=T["axis_color"],
+            tickfont=dict(size=10, color=T["text_secondary"]),
+            tickangle=xangle,
+            title_font=dict(size=11, color=T["text_secondary"]),
+            zeroline=False,
+        ),
+        yaxis=dict(
+            gridcolor=T["grid_color"],
+            linecolor=T["axis_color"],
+            tickfont=dict(size=10, color=T["text_secondary"]),
+            title_font=dict(size=11, color=T["text_secondary"]),
+            zeroline=False,
+        ),
+        coloraxis_showscale=False,
+        hoverlabel=dict(
+            bgcolor=T["bg_card"],
+            bordercolor=T["border"],
+            font=dict(size=11, color=T["text_primary"]),
+        ),
+        template=T["plotly_tmpl"],
+    )
+    return fig
+
+
 from config import (
     PROCESSED_DATA_PATH,
     MERGED_DATA_PATH,
@@ -152,64 +605,128 @@ barra2_available = check_barra2_has_data(df)
 anomaly_available = check_anomaly_has_data(df)
 
 
+# ── Filter data (computed before sidebar so counts are available) ──────────────
+
+if df.empty:
+    st.warning("No data found. Run `python main.py` first.")
+    st.stop()
+
+all_states = sorted(df["state"].dropna().unique().tolist()) \
+    if "state" in df.columns else []
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
+
 with st.sidebar:
-    st.markdown("### 🌡️ AusClimate")
-    st.caption("Real-Time Australian Climate Analytics")
+
+    # Brand block
+    st.markdown(f"""
+    <div class="aus-sidebar-brand">
+        <div class="aus-sidebar-brand-title">AusClimate</div>
+        <div class="aus-sidebar-brand-sub">REAL-TIME CLIMATE ANALYTICS</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Theme toggle
+    st.markdown(
+        '<p class="aus-section-label">Display</p>',
+        unsafe_allow_html=True
+    )
+    theme_btn_label = "Switch to Light Mode" \
+        if st.session_state.theme == "dark" \
+        else "Switch to Dark Mode"
+    if st.button(theme_btn_label,
+                 use_container_width=True,
+                 key="theme_toggle"):
+        st.session_state.theme = (
+            "light"
+            if st.session_state.theme == "dark"
+            else "dark"
+        )
+        st.rerun()
+
     st.divider()
 
     # Data source status
-    st.markdown('<p class="section-label">Data Sources</p>',
-                unsafe_allow_html=True)
-
-    n_stations = df["station_name"].nunique() if "station_name" in df.columns else 0
-    bom_status = (
-        f'<span class="status-ok">● Live</span> '
-        f' {n_stations} stations'
-        if n_stations > 0
-        else '<span class="status-err">● No data</span>'
-    )
-    barra2_status = (
-        '<span class="status-ok">● Loaded</span>'
-        if barra2_available
-        else '<span class="status-warn">● Pending NCI access</span>'
-    )
-
     st.markdown(
-        f"**BOM** {bom_status}<br>"
-        f"**BARRA2** {barra2_status}<br>"
-        f"**ERA5** <span class=\"status-warn\">● To be loaded</span>",
+        '<p class="aus-section-label">Data Sources</p>',
         unsafe_allow_html=True
     )
-    st.divider()
 
-    # Refresh
-    if st.button("🔄 Refresh Data", width='stretch'):
-        with st.spinner("Running BOM ingestion..."):
+    n_stations     = df["station_name"].nunique() \
+        if "station_name" in df.columns else 0
+    bom_cls        = "aus-badge-live" \
+        if n_stations > 0 else "aus-badge-offline"
+    bom_label      = f"LIVE {n_stations:,} STN" \
+        if n_stations > 0 else "OFFLINE"
+    barra2_cls     = "aus-badge-live" \
+        if barra2_available else "aus-badge-pending"
+    barra2_label   = "ACTIVE" if barra2_available else "PENDING"
+    era5_cls   = "aus-badge-offline"
+    era5_label = "NO KEY"
+    aemo_available = (
+        not df_aemo.empty
+        and "total_demand_mw" in df_aemo.columns
+        and df_aemo["total_demand_mw"].notna().any()
+    )
+    aemo_cls       = "aus-badge-live" \
+        if aemo_available else "aus-badge-pending"
+    aemo_label     = "LIVE" if aemo_available else "PENDING"
+
+    st.markdown(f"""
+    <div style="display:flex; flex-direction:column; gap:7px;
+                margin-bottom:14px;">
+        <div style="display:flex; justify-content:space-between;
+                    align-items:center;">
+            <span style="font-size:11px;
+                         color:{T['text_secondary']};">BOM</span>
+            <span class="aus-badge {bom_cls}">{bom_label}</span>
+        </div>
+        <div style="display:flex; justify-content:space-between;
+                    align-items:center;">
+            <span style="font-size:11px;
+                         color:{T['text_secondary']};">BARRA2</span>
+            <span class="aus-badge {barra2_cls}">{barra2_label}</span>
+        </div>
+        <div style="display:flex; justify-content:space-between;
+                    align-items:center;">
+            <span style="font-size:11px;
+                         color:{T['text_secondary']};">AEMO</span>
+            <span class="aus-badge {aemo_cls}">{aemo_label}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Refresh button
+    if st.button("Refresh BOM Data",
+                 use_container_width=True,
+                 key="refresh_btn"):
+        with st.spinner("Refreshing..."):
             try:
-                from ingestion.bom import fetch_all_stations, get_station_coords
+                from ingestion.bom import (
+                    fetch_all_stations, get_station_coords
+                )
                 from pipeline.cleaner import clean_bom_data
                 from pipeline.feature_eng import compute_station_summary
                 from pipeline.storage import save_parquet
-                from pipeline.spatial_join import merge_bom_barra2, merge_era5
+                from pipeline.spatial_join import (
+                    merge_bom_barra2, merge_era5
+                )
 
                 df_raw   = fetch_all_stations()
                 df_clean = clean_bom_data(df_raw)
                 save_parquet(df_clean, PROCESSED_DATA_PATH)
 
-                # Reload BARRA2 from cache if available
-                barra2_df = pd.DataFrame()
+                barra2_cached = pd.DataFrame()
                 if os.path.exists(BARRA2_CACHE_PATH):
                     try:
-                        barra2_df = pd.read_parquet(BARRA2_CACHE_PATH)
+                        barra2_cached = pd.read_parquet(BARRA2_CACHE_PATH)
                     except Exception:
                         pass
 
-                merged = merge_bom_barra2(df_clean, barra2_df)
+                merged = merge_bom_barra2(df_clean, barra2_cached)
                 save_parquet(merged, MERGED_DATA_PATH)
                 feat = compute_station_summary(merged)
                 save_parquet(feat, STATION_SUMMARY_PATH)
-
                 st.cache_data.clear()
                 st.rerun()
             except Exception as e:
@@ -217,16 +734,11 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Filters ───────────────────────────────────────────────────
-    st.markdown('<p class="section-label">Filters</p>',
-                unsafe_allow_html=True)
-
-    if df.empty:
-        st.warning("No data. Run `python main.py` first.")
-        st.stop()
-
-    all_states = sorted(df["state"].dropna().unique().tolist()) \
-        if "state" in df.columns else []
+    # Filters
+    st.markdown(
+        '<p class="aus-section-label">Filters</p>',
+        unsafe_allow_html=True
+    )
 
     selected_states = st.multiselect(
         "States",
@@ -240,28 +752,27 @@ with st.sidebar:
         else df
     )
 
-    all_stations_in_state = sorted(
+    all_stations_list = sorted(
         df_state["station_name"].dropna().unique().tolist()
     ) if "station_name" in df_state.columns else []
 
     selected_stations = st.multiselect(
         "Stations",
-        options=all_stations_in_state,
-        default=all_stations_in_state[:12]
-        if len(all_stations_in_state) > 12
-        else all_stations_in_state,
+        options=all_stations_list,
+        default=all_stations_list[:12]
+        if len(all_stations_list) > 12
+        else all_stations_list,
     )
 
-    # Variable picker
     FEATURE_OPTIONS = {}
     for col, label in {
-        "temperature_c":  "Temperature (°C)",
-        "feels_like_c":   "Feels Like (°C)",
+        "temperature_c":  "Temperature (C)",
+        "feels_like_c":   "Feels Like (C)",
         "humidity_pct":   "Humidity (%)",
         "wind_speed_kmh": "Wind Speed (km/h)",
         "gust_kmh":       "Max Gust (km/h)",
         "pressure_hpa":   "Pressure (hPa)",
-        "dewpoint_c":     "Dewpoint (°C)",
+        "dewpoint_c":     "Dewpoint (C)",
         "rainfall_mm":    "Rainfall (mm)",
     }.items():
         if col in df.columns:
@@ -274,14 +785,18 @@ with st.sidebar:
 
     chart_type = st.radio(
         "Chart Type",
-        ["Bar", "Horizontal Bar", "Line", "Scatter", "Box", "Violin",
+        ["Bar", "Horizontal Bar", "Line",
+         "Scatter", "Box", "Violin",
          "Radar", "Heatmap", "Bubble"],
     )
 
 
-# ── Filter data ───────────────────────────────────────────────────────────────
+# ── Filter data based on sidebar selections ───────────────────────────────────
+
 if selected_stations:
-    df_filtered = df[df["station_name"].isin(selected_stations)].copy()
+    df_filtered = df[
+        df["station_name"].isin(selected_stations)
+    ].copy()
 else:
     df_filtered = df_state.copy()
 
@@ -295,6 +810,45 @@ station_mean = (
     .sort_values(selected_col, ascending=False)
 )
 station_mean.columns = ["Station", selected_label]
+
+
+# ── Operational header ────────────────────────────────────────────────────────
+
+from datetime import datetime as _dt
+now_str = _dt.now().strftime("%d %b %Y  %H:%M AEST")
+
+st.markdown(f"""
+<div class="aus-header">
+    <div>
+        <div class="aus-header-title">AusClimate</div>
+        <div class="aus-header-sub">
+            Real-Time Australian Climate Analytics Platform
+            &nbsp;|&nbsp; University of Technology Sydney
+        </div>
+    </div>
+    <div style="display:flex; align-items:center;
+                gap:8px; flex-wrap:wrap;">
+        <span class="aus-badge {bom_cls}">
+            BOM {n_stations:,} Stations
+        </span>
+        <span class="aus-badge {barra2_cls}">
+            BARRA2 {barra2_label}
+        </span>
+        <span class="aus-badge {aemo_cls}">
+            AEMO {aemo_label}
+        </span>
+        <span style="font-size:10px;
+                     color:{T['text_muted']};
+                     margin-left:8px;
+                     letter-spacing:0.04em;">
+            {now_str}
+        </span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Tab content follows below here...
+
 
 
 # ── TABS ──────────────────────────────────────────────────────────────────────

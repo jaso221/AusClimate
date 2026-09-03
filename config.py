@@ -142,16 +142,6 @@ BARRA2_CACHE_HOURS = 24
 # Coarser than BARRA2 (31km) but global coverage.
 # Cached by date to avoid repeated slow CDS queue requests.
 
-ERA5_VARIABLES = [
-    "2m_temperature",
-    "2m_dewpoint_temperature",
-    "10m_u_component_of_wind",
-    "10m_v_component_of_wind",
-    "surface_pressure",
-    "total_precipitation",
-]
-
-ERA5_CACHE_HOURS = 24  # Re-fetch if cache older than this
 
 
 # ── Storage Paths ─────────────────────────────────────────────────────────────
@@ -159,7 +149,6 @@ ERA5_CACHE_HOURS = 24  # Re-fetch if cache older than this
 RAW_DATA_PATH          = "data/raw/bom_raw.parquet"
 PROCESSED_DATA_PATH    = "data/processed/bom_latest.parquet"
 BARRA2_CACHE_PATH      = "data/processed/barra2_baseline.parquet"
-ERA5_CACHE_PATH        = "data/processed/era5_latest.parquet"
 MERGED_DATA_PATH       = "data/processed/merged_latest.parquet"
 STATION_SUMMARY_PATH   = "data/processed/station_summary.parquet"
 STATION_LIST_PATH      = "data/processed/station_list.parquet"

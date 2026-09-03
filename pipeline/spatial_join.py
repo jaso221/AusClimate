@@ -87,20 +87,3 @@ def merge_bom_barra2(df_bom: pd.DataFrame,
     return merged.reset_index(drop=True)
 
 
-def merge_era5(df_merged: pd.DataFrame,
-               df_era5: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add ERA5 supplementary data to the merged DataFrame.
-    Only adds columns for stations where BARRA2 context is missing.
-    """
-    if df_era5.empty or df_merged.empty:
-        return df_merged
-
-    era5_cols = ["station_name"] + [
-        c for c in df_era5.columns if c.startswith("era5_")
-    ]
-    df_era5_subset = df_era5[era5_cols]
-
-    merged = df_merged.merge(df_era5_subset, on="station_name", how="left")
-    print(f"ERA5 added: {len(merged)} records.")
-    return merged
