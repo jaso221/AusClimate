@@ -182,10 +182,28 @@ def run_pipeline(force_refresh: bool = False,
     #   heat stress score, vulnerability index
     #   BARRA2 baseline columns and anomaly columns (if available)
     #   ML anomaly summary columns (if available)
+    
+    # ── Step 5: Feature engineering ───────────────────────────────
     print("\n[5/5] Feature Engineering")
     print("-" * 40)
 
     df_summary = compute_station_summary(df_merged)
+
+    # ── Step 5b: K-Means clustering ────────────────────────────────
+    print("\n[5b/5] K-Means Station Clustering")
+    print("-" * 40)
+
+    try:
+        from anomaly.detector import run_kmeans_clustering
+        df_summary = run_kmeans_clustering(
+            df_summary,
+            n_clusters=6,
+            force_retrain=force_retrain,
+        )
+    except Exception as e:
+        print(f"  K-Means error: {e}")
+        print("  Continuing without cluster assignments.")
+
     save_parquet(df_summary, STATION_SUMMARY_PATH)
 
     # ── Final summary ──────────────────────────────────────────────
@@ -242,6 +260,9 @@ def run_pipeline(force_refresh: bool = False,
     print(f"  LOF anomalies flagged: {lof_flags:,}")   
     print(f"  Ensemble (both agree): {ensemble_flags:,}")
     print(f"  Station summaries    : {len(df_summary)}")
+    n_clusters_found = df_summary["cluster_id"].nunique() \
+        if "cluster_id" in df_summary.columns else 0
+    print(f"  Climate clusters     : {n_clusters_found}")
     print("=" * 60)
 
     # Warn if nothing useful came through

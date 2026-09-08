@@ -132,8 +132,8 @@ AUSTRALIA_BOUNDS = {
 }
 
 # How many hours old BARRA2 cache can be before re-fetching
-# Set to 24 because BARRA2 is historical context, not real-time
-BARRA2_CACHE_HOURS = 24
+# Set to 168 (7 days) because BARRA2 is historical context, not real-time
+BARRA2_CACHE_HOURS = 168
 
 
 # ── ERA5 Configuration ────────────────────────────────────────────────────────

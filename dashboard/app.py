@@ -58,7 +58,7 @@ THEMES = {
         "plotly_tmpl":    "plotly_dark",
         "grid_color":     "rgba(255,255,255,0.05)",
         "axis_color":     "rgba(255,255,255,0.08)",
-        "mapbox_style":   "carto-darkmatter",
+        "mapbox_style":   "open-street-map",
     },
     "light": {
         "bg_primary":     "#F6F8FA",
@@ -80,7 +80,7 @@ THEMES = {
         "plotly_tmpl":    "plotly_white",
         "grid_color":     "rgba(0,0,0,0.04)",
         "axis_color":     "rgba(0,0,0,0.06)",
-        "mapbox_style":   "carto-positron",
+        "mapbox_style":   "open-street-map",
     },
 }
 
@@ -88,6 +88,60 @@ if "theme" not in st.session_state:
     st.session_state.theme = "dark"
 
 T = THEMES[st.session_state.theme]
+
+# ── Stakeholder mode system ───────────────────────────────────────────────────
+
+STAKEHOLDER_MODES = {
+    "council":    {
+        "label":   "Local Council",
+        "icon":    "🏛️",
+        "desc":    "Heat stress monitoring, station vulnerability, risk mapping",
+        "primary": "Station Map",
+        "tabs":    ["Station Map", "Anomalies", "Data Table",
+                    "BARRA2 Comparison", "Energy",  "Clustering", "Overview",
+                    "Climate Assistant"],
+    },
+    "emergency":  {
+        "label":   "Emergency Services",
+        "icon":    "🚨",
+        "desc":    "Live risk flags, compound anomalies, energy-climate alerts",
+        "primary": "Anomalies",
+        "tabs":    ["Anomalies", "Energy", "Station Map", "Overview",
+                    "BARRA2 Comparison", "Data Table",  "Clustering", "Climate Assistant"],
+    },
+    "government": {
+        "label":   "Government Agency",
+        "icon":    "🏢",
+        "desc":    "Historical baselines, policy data, exports and reporting",
+        "primary": "BARRA2 Comparison",
+        "tabs":    ["BARRA2 Comparison", "Data Table", "Anomalies",  "Clustering",
+                    "Overview", "Station Map", "Energy",
+                    "Climate Assistant"],
+    },
+    "researcher": {
+        "label":   "Researcher",
+        "icon":    "🔬",
+        "desc":    "SHAP attribution, BARRA2 reanalysis, full data access",
+        "primary": "BARRA2 Comparison",
+        "tabs":    ["BARRA2 Comparison", "Anomalies",  "Clustering", "Data Table",
+                    "Station Map", "Overview", "Energy",
+                    "Climate Assistant"],
+    },
+    "all":        {
+        "label":   "Full Platform",
+        "icon":    "⚡",
+        "desc":    "All features and all tabs",
+        "primary": "Overview",
+        "tabs":    ["Overview", "Station Map", "Anomalies",
+                    "BARRA2 Comparison", "Data Table", "Energy", "Clustering",
+                    "Climate Assistant"],
+    },
+}
+
+if "stakeholder_mode" not in st.session_state:
+    st.session_state.stakeholder_mode = None
+
+MODE = st.session_state.stakeholder_mode
 
 # Legacy variable names -- keep all existing chart code working unchanged
 PLOT_BG           = T["plot_bg"]
@@ -644,6 +698,72 @@ p, span, label, div {{
     margin: 12px 0;
     box-shadow: {shadow};
 }}
+
+/* ── Stakeholder landing ─────────────────────────────────── */
+.mode-card {{
+    background: {T["bg_card"]};
+    border: 1px solid {T["border"]};
+    border-radius: 10px;
+    padding: 24px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    height: 100%;
+}}
+.mode-card:hover {{
+    border-color: {T["accent"]};
+    box-shadow: 0 4px 20px {T["accent"]}25;
+    transform: translateY(-2px);
+}}
+.mode-card-icon {{
+    font-size: 36px;
+    margin-bottom: 12px;
+    line-height: 1;
+}}
+.mode-card-title {{
+    font-size: 15px;
+    font-weight: 700;
+    color: {T["text_primary"]};
+    margin-bottom: 8px;
+    letter-spacing: -0.01em;
+}}
+.mode-card-desc {{
+    font-size: 11px;
+    color: {T["text_secondary"]};
+    line-height: 1.5;
+}}
+.mode-landing-header {{
+    text-align: center;
+    padding: 40px 20px 32px;
+    background: linear-gradient(135deg,
+        {T["bg_card"]} 0%, {T["bg_input"]} 100%);
+    border: 1px solid {T["border"]};
+    border-radius: 12px;
+    margin-bottom: 28px;
+    position: relative;
+    overflow: hidden;
+}}
+.mode-landing-header::after {{
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg,
+        {T["accent"]}, {T["success"]}, {T["accent_light"]});
+}}
+.mode-tag {{
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 12px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 600;
+    background: {T["accent"]}18;
+    color: {T["accent_light"]};
+    border: 1px solid {T["accent"]}40;
+    margin-bottom: 16px;
+}}
 </style>
 """
 
@@ -710,6 +830,62 @@ def chart_layout(fig,
     )
     return fig
 
+def map_layout(fig,
+               T: dict,
+               title: str = "",
+               height: int = 600,
+               center_lat: float = -26.0,
+               center_lon: float = 134.0,
+               zoom: float = 3.4,
+               legend: bool = False) -> object:
+    """
+    Apply consistent full-width Australia map layout.
+    Uses open-street-map tiles -- free, no API key, no watermark.
+    Fills the full container width and shows proper map detail.
+    """
+    is_dark = (
+        T["bg_primary"].startswith("#0") or
+        T["bg_primary"].startswith("#1")
+    )
+
+    fig.update_layout(
+        mapbox=dict(
+            style="open-street-map",
+            center=dict(lat=center_lat, lon=center_lon),
+            zoom=zoom,
+        ),
+        height=height,
+        margin=dict(t=44, b=0, l=0, r=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=legend,
+        legend=dict(
+            bgcolor=T["bg_card"],
+            bordercolor=T["border"],
+            borderwidth=1,
+            font=dict(size=11, color=T["text_primary"]),
+        ) if legend else {},
+    )
+
+    if title:
+        fig.update_layout(
+            title=dict(
+                text=title,
+                font=dict(size=13, color=T["text_primary"],
+                          family="Inter, -apple-system, sans-serif"),
+                x=0, xanchor="left",
+                pad=dict(l=8, t=8),
+            )
+        )
+
+    # Dark overlay: for dark theme add a semi-transparent dark layer
+    # by darkening the map opacity slightly
+    if is_dark:
+        fig.update_traces(
+            marker=dict(opacity=0.9)
+        )
+
+    return fig
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
@@ -722,11 +898,12 @@ def load_all_data():
             except Exception:
                 return pd.DataFrame()
         return pd.DataFrame()
-    merged  = safe_read(MERGED_DATA_PATH)
+    merged   = safe_read(MERGED_DATA_PATH)
     if merged.empty:
         merged = safe_read(PROCESSED_DATA_PATH)
-    summary = safe_read(STATION_SUMMARY_PATH)
-    return merged, summary
+    summary  = safe_read(STATION_SUMMARY_PATH)
+    clusters = safe_read("data/processed/station_clusters.parquet")
+    return merged, summary, clusters
 
 
 @st.cache_data(ttl=300)
@@ -762,7 +939,7 @@ def load_shap_data():
 
 # ── Load all data ─────────────────────────────────────────────────────────────
 
-df, summary                        = load_all_data()
+df, summary, df_clusters           = load_all_data()
 df_aemo, df_aemo_bom, df_aemo_hist = load_aemo_data()
 df_shap, df_shap_global            = load_shap_data()
 
@@ -793,6 +970,90 @@ aemo_available = (
     and "total_demand_mw" in df_aemo.columns
     and df_aemo["total_demand_mw"].notna().any()
 )
+def show_landing_page():
+    """
+    Full-screen stakeholder selection landing page.
+    Shown only when no mode has been selected yet.
+    Replaced by the main dashboard once a mode is chosen.
+    """
+    # Top header card
+    st.markdown(f"""
+    <div class="mode-landing-header">
+        <div class="mode-tag">Select Your Role</div>
+        <div style="font-size:32px; font-weight:800;
+                    color:{T['text_primary']};
+                    letter-spacing:-0.03em; margin-bottom:10px;">
+            Welcome to AusClimate
+        </div>
+        <div style="font-size:14px; color:{T['text_secondary']};
+                    max-width:520px; margin:0 auto; line-height:1.6;">
+            Tell us who you are and we will show you the most relevant
+            features first. You can always switch roles or access all
+            features at any time.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Four role cards
+    c1, c2, c3, c4 = st.columns(4)
+    cols = [c1, c2, c3, c4]
+    modes = ["council", "emergency", "government", "researcher"]
+
+    for col, mode_key in zip(cols, modes):
+        info = STAKEHOLDER_MODES[mode_key]
+        with col:
+            st.markdown(f"""
+            <div class="mode-card">
+                <div class="mode-card-icon">{info['icon']}</div>
+                <div class="mode-card-title">{info['label']}</div>
+                <div class="mode-card-desc">{info['desc']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button(
+                f"Enter as {info['label']}",
+                key=f"mode_{mode_key}",
+                use_container_width=True,
+            ):
+                st.session_state.stakeholder_mode = mode_key
+                st.rerun()
+
+    # Divider and full platform option
+    st.markdown(f"""
+    <div style="text-align:center; margin:24px 0 8px;
+                color:{T['text_muted']}; font-size:11px;
+                letter-spacing:0.08em; text-transform:uppercase;">
+        or
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_mid = st.columns([2, 2, 2])[1]
+    with col_mid:
+        if st.button(
+            "⚡ Open Full Platform (All Features)",
+            key="mode_all",
+            use_container_width=True,
+        ):
+            st.session_state.stakeholder_mode = "all"
+            st.rerun()
+
+    # Info footer
+    st.markdown(f"""
+    <div style="text-align:center; margin-top:32px;
+                color:{T['text_muted']}; font-size:11px;">
+        Bureau of Meteorology &nbsp;|&nbsp; BARRA2 Reanalysis &nbsp;|&nbsp;
+        AEMO Energy &nbsp;|&nbsp; Isolation Forest + LOF + SHAP
+        &nbsp;|&nbsp; University of Technology Sydney 2026
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# Show landing page if no mode selected yet
+if st.session_state.stakeholder_mode is None:
+    show_landing_page()
+    st.stop()
+
+MODE     = st.session_state.stakeholder_mode
+MODE_INFO = STAKEHOLDER_MODES.get(MODE, STAKEHOLDER_MODES["all"])
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -816,6 +1077,29 @@ with st.sidebar:
         st.session_state.theme = (
             "light" if st.session_state.theme == "dark" else "dark"
         )
+        st.rerun()
+    
+    # Current role indicator
+    st.markdown(f"""
+    <div style="background:{T['bg_input']};
+                border:1px solid {T['border']};
+                border-radius:8px; padding:10px 12px;
+                margin-bottom:12px;">
+        <div style="font-size:9px; font-weight:700;
+                    text-transform:uppercase; letter-spacing:0.1em;
+                    color:{T['text_muted']}; margin-bottom:5px;">
+            Current Role
+        </div>
+        <div style="font-size:14px; font-weight:700;
+                    color:{T['text_primary']};">
+            {MODE_INFO['icon']} {MODE_INFO['label']}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button("Change Role", use_container_width=True,
+                 key="change_role"):
+        st.session_state.stakeholder_mode = None
         st.rerun()
 
     st.divider()
@@ -981,18 +1265,132 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# ── Stakeholder quick access panel ────────────────────────────────────────────
+
+if MODE != "all":
+    st.markdown(f"""
+    <div style="background:{T['bg_card']};
+                border:1px solid {T['border']};
+                border-radius:8px; padding:14px 18px;
+                margin-bottom:16px;
+                border-left:3px solid {T['accent']};">
+        <div style="font-size:10px; font-weight:700;
+                    text-transform:uppercase; letter-spacing:0.1em;
+                    color:{T['text_muted']}; margin-bottom:6px;">
+            {MODE_INFO['icon']} {MODE_INFO['label']} -- Recommended View
+        </div>
+        <div style="font-size:12px; color:{T['text_secondary']};">
+            Your primary tab is
+            <span style="color:{T['accent_light']};font-weight:600;">
+                {MODE_INFO['primary']}
+            </span>.
+            Tabs are ordered to surface the most relevant data for your role.
+            All features remain accessible.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ── Mode-specific metric highlights ───────────────────────────────────────────
+
+if MODE == "emergency" and ml_available:
+    n_ensemble = int(df["ensemble_anomaly"].sum()) \
+        if "ensemble_anomaly" in df.columns else 0
+    n_severe   = int((df["ml_severity"] == "Severe").sum()) \
+        if "ml_severity" in df.columns else 0
+    risk_color = T["critical"] if n_ensemble > 0 else T["success"]
+    st.markdown(f"""
+    <div style="background:{risk_color}12;
+                border:1px solid {risk_color}40;
+                border-radius:8px; padding:12px 18px;
+                margin-bottom:16px;
+                display:flex; align-items:center; gap:16px;">
+        <div style="font-size:28px; font-weight:800;
+                    color:{risk_color};">{n_ensemble:,}</div>
+        <div>
+            <div style="font-size:12px; font-weight:700;
+                        color:{T['text_primary']};">
+                High-Confidence Ensemble Anomalies
+            </div>
+            <div style="font-size:11px; color:{T['text_secondary']};">
+                {n_severe} severe flags | Flagged by both IF and LOF
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+elif MODE == "council" and not summary.empty:
+    high_risk_count = 0
+    if "vulnerability_index" in summary.columns:
+        vi = pd.to_numeric(summary["vulnerability_index"], errors="coerce")
+        high_risk_count = int((vi > 70).sum())
+    st.markdown(f"""
+    <div style="background:{T['warning']}12;
+                border:1px solid {T['warning']}40;
+                border-radius:8px; padding:12px 18px;
+                margin-bottom:16px;
+                display:flex; align-items:center; gap:16px;">
+        <div style="font-size:28px; font-weight:800;
+                    color:{T['warning']};">{high_risk_count}</div>
+        <div>
+            <div style="font-size:12px; font-weight:700;
+                        color:{T['text_primary']};">
+                Stations with High Vulnerability Index (above 70)
+            </div>
+            <div style="font-size:11px; color:{T['text_secondary']};">
+                Check the Data Table tab sorted by Vulnerability
+                for ward-level planning
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+# ── Dynamic tab order based on stakeholder mode ───────────────────────────────
+
+ALL_TAB_NAMES = [
     "Overview",
     "Station Map",
     "Anomalies",
     "BARRA2 Comparison",
     "Data Table",
     "Energy",
+    "Clustering",  
     "Climate Assistant",
-])
+]
+
+ALL_TAB_ICONS = {
+    "Overview":          "Overview",
+    "Station Map":       "Station Map",
+    "Anomalies":         "Anomalies",
+    "BARRA2 Comparison": "BARRA2 Comparison",
+    "Data Table":        "Data Table",
+    "Energy":            "Energy",
+    "Clustering":        "Clustering",
+    "Climate Assistant": "Climate Assistant",
+}
+
+# Get ordered tab names for current mode
+ordered_tabs = MODE_INFO.get("tabs", ALL_TAB_NAMES)
+# Ensure all tabs present (in case mode list is missing any)
+for t in ALL_TAB_NAMES:
+    if t not in ordered_tabs:
+        ordered_tabs.append(t)
+
+# Build tab lookup so existing tab content still works
+tab_objects = st.tabs(ordered_tabs)
+tab_lookup  = {name: tab_objects[i]
+               for i, name in enumerate(ordered_tabs)}
+
+# Assign to existing variable names for compatibility
+tab1 = tab_lookup["Overview"]
+tab2 = tab_lookup["Station Map"]
+tab3 = tab_lookup["Anomalies"]
+tab4 = tab_lookup["BARRA2 Comparison"]
+tab5 = tab_lookup["Data Table"]
+tab6 = tab_lookup["Energy"]
+tab7 = tab_lookup["Clustering"]   
+tab8 = tab_lookup["Climate Assistant"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1361,7 +1759,7 @@ with tab2:
             lat="latitude", lon="longitude",
             color=map_colour_col,
             color_continuous_scale=COLOUR_SCALE,
-            size_max=9,
+            size_max=22,
             hover_name="station_name",
             hover_data={
                 "state":         True,
@@ -1408,6 +1806,7 @@ with tab2:
             )
             chart_layout(fig_hist, height=300)
             st.plotly_chart(fig_hist, use_container_width=True)
+            
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1532,30 +1931,42 @@ with tab3:
                 if not map_risk.empty:
                     fig_risk = px.scatter_mapbox(
                         map_risk,
-                        lat="latitude", lon="longitude",
+                        lat="latitude",
+                        lon="longitude",
                         color="station_risk",
                         color_discrete_map=risk_colours,
                         size="if_anomaly_count",
-                        size_max=18,
+                        size_max=22,
                         hover_name="station_name",
                         hover_data={
-                        "state":              True,
-                        "if_anomaly_count":   True,
-                        "if_anomaly_rate_pct":True,
-                        "station_risk":       True,
-                        "latitude":           False,
-                        "longitude":          False,
+                            "state":               True,
+                            "if_anomaly_count":    True,
+                            "if_anomaly_rate_pct": True,
+                            "station_risk":        True,
+                            "latitude":            False,
+                            "longitude":           False,
                         },
-                        mapbox_style=T["mapbox_style"],
-                        zoom=3.5,
+                        zoom=3.4,
                         center={"lat": -26, "lon": 134},
-                        height=480,
+                        height=560,
                     )
-                    chart_layout(
-                        fig_risk,
-                        title="Station Risk -- dot size = anomaly count",
-                        margin=dict(t=44, b=0, l=0, r=0),
-                        legend=True
+                    map_layout(
+                        fig_risk, T,
+                        title="Station Risk Map -- "
+                              "dot size = anomaly count",
+                        height=560,
+                        legend=True,
+                    )
+                    fig_risk.update_layout(
+                        legend=dict(
+                            title=dict(
+                                text="Risk Level",
+                                font=dict(
+                                    size=11,
+                                    color=T["text_secondary"]
+                                ),
+                            ),
+                        )
                     )
                     st.plotly_chart(fig_risk, use_container_width=True)
                 else:
@@ -1883,11 +2294,12 @@ with tab3:
                     if not ens_map.empty:
                         fig_ens_map = px.scatter_mapbox(
                             ens_map,
-                            lat="latitude", lon="longitude",
+                            lat="latitude",
+                            lon="longitude",
                             color="ml_anomaly_score",
                             color_continuous_scale=COLOUR_SCALE_DIV,
                             size="ensemble_anomaly",
-                            size_max=20,
+                            size_max=22,
                             hover_name="station_name",
                             hover_data={
                                 "state":             True,
@@ -1897,16 +2309,33 @@ with tab3:
                                 "latitude":          False,
                                 "longitude":         False,
                             },
-                            mapbox_style=T["mapbox_style"],
-                            zoom=3.5,
+                            zoom=3.4,
                             center={"lat": -26, "lon": 134},
-                            height=440,
+                            height=500,
                         )
-                        chart_layout(
-                            fig_ens_map,
+                        map_layout(
+                            fig_ens_map, T,
                             title="Ensemble Anomalies -- "
-                                  "dot size = count, colour = IF score",
-                            margin=dict(t=44, b=0, l=0, r=0),
+                                  "dot size = count, "
+                                  "colour = IF score",
+                            height=500,
+                        )
+                        fig_ens_map.update_layout(
+                            coloraxis=dict(
+                                colorbar=dict(
+                                    title=dict(
+                                        text="IF Score",
+                                        font=dict(
+                                            size=11,
+                                            color=T["text_secondary"],
+                                        ),
+                                    ),
+                                    tickfont=dict(
+                                        size=10,
+                                        color=T["text_secondary"],
+                                    ),
+                                )
+                            )
                         )
                         st.plotly_chart(
                             fig_ens_map, use_container_width=True
@@ -2457,11 +2886,427 @@ with tab6:
             "CC-BY 4.0"
         )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 7 -- CLIMATE ASSISTANT
+# TAB 7 -- CLUSTERING
 # ─────────────────────────────────────────────────────────────────────────────
 with tab7:
+    st.subheader("Climate Station Clustering")
+    st.caption(
+        "K-Means clustering groups the 700+ BOM stations into distinct "
+        "climate profiles using temperature, humidity, wind, pressure, "
+        "and geographic location. Each cluster represents a recognisable "
+        "Australian climate regime. Anomalies detected within a cluster "
+        "are contextualised against stations sharing similar baseline "
+        "conditions rather than the full national dataset."
+    )
+
+    cluster_available = (
+        not df_clusters.empty
+        and "cluster_label" in df_clusters.columns
+    )
+
+    if not cluster_available and "cluster_label" in summary.columns:
+        df_clusters      = summary.copy()
+        cluster_available = True
+
+    if not cluster_available:
+        st.info(
+            "Climate cluster data not yet available. "
+            "Run `python main.py` to generate cluster assignments."
+        )
+        st.markdown("""
+        **What this tab shows when clustering runs:**
+        - National map with stations coloured by climate cluster
+        - Six Australian climate profiles: Tropical, Arid Desert,
+          Subtropical, Temperate Coastal, Cool Temperate, Mediterranean
+        - Variable comparison across clusters
+        - Cluster profile radar chart
+        - Anomaly rates per cluster
+        - Full station to cluster assignment table
+        """)
+    else:
+        # Colour palette
+        CLUSTER_COLOURS = {
+            "Tropical":           "#EF4444",
+            "Arid Desert":        "#F59E0B",
+            "Subtropical":        "#F97316",
+            "Temperate Coastal":  "#3B82F6",
+            "Cool Temperate":     "#06B6D4",
+            "Mediterranean":      "#8B5CF6",
+        }
+
+        n_clusters_found = df_clusters["cluster_label"].nunique()
+        n_stations_cl    = len(df_clusters)
+
+        # Top metrics
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Climate Clusters",    n_clusters_found)
+        c2.metric("Stations Clustered",  f"{n_stations_cl:,}")
+
+        if "mean_temperature_c" in df_clusters.columns:
+            hottest_cl = (
+                df_clusters.groupby("cluster_label")["mean_temperature_c"]
+                .mean().idxmax()
+            )
+            coldest_cl = (
+                df_clusters.groupby("cluster_label")["mean_temperature_c"]
+                .mean().idxmin()
+            )
+            c3.metric("Hottest Cluster",  hottest_cl)
+            c4.metric("Coolest Cluster",  coldest_cl)
+
+        st.divider()
+
+        # Cluster map
+        map_df_c = df_clusters.dropna(
+            subset=["latitude", "longitude", "cluster_label"]
+        ).copy()
+        for col in ["latitude", "longitude"]:
+            map_df_c[col] = pd.to_numeric(map_df_c[col], errors="coerce")
+        map_df_c = map_df_c.dropna(subset=["latitude", "longitude"])
+
+        if not map_df_c.empty:
+            hover_data = {
+                "cluster_label": True,
+                "state":         True,
+                "latitude":      False,
+                "longitude":     False,
+            }
+            for col in ["mean_temperature_c", "mean_humidity_pct"]:
+                if col in map_df_c.columns:
+                    map_df_c[col] = pd.to_numeric(
+                        map_df_c[col], errors="coerce"
+                    ).round(1)
+                    hover_data[col] = ":.1f"
+
+            fig_cl_map = px.scatter_mapbox(
+                map_df_c,
+                lat="latitude",
+                lon="longitude",
+                color="cluster_label",
+                color_discrete_map=CLUSTER_COLOURS,
+                hover_name="station_name",
+                hover_data=hover_data,
+                zoom=3.4,
+                center={"lat": -26, "lon": 134},
+                height=580,
+                size_max=12,
+            )
+            map_layout(
+                fig_cl_map, T,
+                title=f"Australian Climate Clusters -- "
+                      f"{n_clusters_found} profiles from "
+                      f"{n_stations_cl:,} stations",
+                height=580,
+                legend=True,
+            )
+            fig_cl_map.update_layout(
+                legend=dict(
+                    title=dict(
+                        text="Climate Profile",
+                        font=dict(size=11, color=T["text_secondary"]),
+                    ),
+                )
+            )
+            st.plotly_chart(fig_cl_map, use_container_width=True)
+
+        st.divider()
+
+        # Get cluster profiles
+        try:
+            from anomaly.detector import get_cluster_profiles
+            profiles = get_cluster_profiles(df_clusters)
+        except Exception:
+            profiles = pd.DataFrame()
+
+        if profiles.empty and cluster_available:
+            agg_dict = {"station_name": "count"}
+            for col in [
+                "mean_temperature_c", "mean_humidity_pct",
+                "mean_wind_speed_kmh", "mean_pressure_hpa",
+                "latitude", "longitude",
+            ]:
+                if col in df_clusters.columns:
+                    agg_dict[col] = "mean"
+            profiles = (
+                df_clusters.groupby("cluster_label")
+                .agg(agg_dict)
+                .reset_index()
+                .rename(columns={"station_name": "station_count"})
+            )
+            for col in profiles.select_dtypes("float").columns:
+                profiles[col] = profiles[col].round(1)
+
+        if not profiles.empty:
+
+            # Variable comparison
+            st.subheader("Variable Comparison Across Clusters")
+            profile_vars = {}
+            for col, label in {
+                "mean_temperature_c":  "Average Temperature (C)",
+                "mean_humidity_pct":   "Average Humidity (%)",
+                "mean_wind_speed_kmh": "Average Wind Speed (km/h)",
+                "mean_pressure_hpa":   "Average Pressure (hPa)",
+            }.items():
+                if col in profiles.columns:
+                    profile_vars[label] = col
+
+            if profile_vars:
+                var_sel = st.selectbox(
+                    "Select variable to compare",
+                    options=list(profile_vars.keys()),
+                    key="cl_var_sel",
+                )
+                var_col = profile_vars[var_sel]
+                profiles[var_col] = pd.to_numeric(
+                    profiles[var_col], errors="coerce"
+                ).round(1)
+
+                fig_var = px.bar(
+                    profiles.sort_values(var_col, ascending=False),
+                    x="cluster_label",
+                    y=var_col,
+                    color="cluster_label",
+                    color_discrete_map=CLUSTER_COLOURS,
+                    text_auto=".1f",
+                    template=T["plotly_tmpl"],
+                    labels={
+                        "cluster_label": "Cluster",
+                        var_col:         var_sel,
+                    },
+                )
+                fig_var.update_traces(textposition="outside")
+                fig_var.update_layout(showlegend=False)
+                chart_layout(
+                    fig_var,
+                    title=f"{var_sel} by Climate Cluster",
+                    height=360,
+                )
+                st.plotly_chart(fig_var, use_container_width=True)
+
+            st.divider()
+
+            # Charts row: station count + radar
+            col_l, col_r = st.columns(2)
+
+            with col_l:
+                st.subheader("Stations per Cluster")
+                if "station_count" in profiles.columns:
+                    fig_cnt = px.bar(
+                        profiles.sort_values(
+                            "station_count", ascending=False
+                        ),
+                        x="cluster_label",
+                        y="station_count",
+                        color="cluster_label",
+                        color_discrete_map=CLUSTER_COLOURS,
+                        text_auto=True,
+                        template=T["plotly_tmpl"],
+                        labels={
+                            "cluster_label": "Cluster",
+                            "station_count": "Stations",
+                        },
+                    )
+                    fig_cnt.update_traces(textposition="outside")
+                    fig_cnt.update_layout(showlegend=False)
+                    chart_layout(fig_cnt, height=320, xangle=-15)
+                    st.plotly_chart(fig_cnt, use_container_width=True)
+
+            with col_r:
+                st.subheader("Multi-Variable Cluster Radar")
+                radar_vars = {
+                    "mean_temperature_c":  "Temp",
+                    "mean_humidity_pct":   "Humidity",
+                    "mean_wind_speed_kmh": "Wind",
+                }
+                avail_r = {k: v for k, v in radar_vars.items()
+                           if k in profiles.columns}
+
+                if len(avail_r) >= 2:
+                    fig_radar = go.Figure()
+                    for _, row in profiles.iterrows():
+                        cname = row["cluster_label"]
+                        vals  = []
+                        for col in avail_r:
+                            v = pd.to_numeric(
+                                row.get(col, 0), errors="coerce"
+                            )
+                            vals.append(
+                                float(v) if not pd.isna(v) else 0
+                            )
+                        fig_radar.add_trace(go.Scatterpolar(
+                            r=vals,
+                            theta=list(avail_r.values()),
+                            fill="toself",
+                            name=cname,
+                            opacity=0.65,
+                            marker_color=CLUSTER_COLOURS.get(
+                                cname, T["accent"]
+                            ),
+                        ))
+                    fig_radar.update_layout(
+                        polar=dict(
+                            bgcolor=T["bg_card"],
+                            radialaxis=dict(
+                                visible=True,
+                                gridcolor=T["grid_color"],
+                                linecolor=T["axis_color"],
+                                tickfont=dict(
+                                    size=9,
+                                    color=T["text_secondary"]
+                                ),
+                            ),
+                            angularaxis=dict(
+                                gridcolor=T["grid_color"],
+                                linecolor=T["axis_color"],
+                                tickfont=dict(
+                                    size=10,
+                                    color=T["text_secondary"]
+                                ),
+                            ),
+                        ),
+                        paper_bgcolor=T["paper_bg"],
+                        font=dict(color=T["text_secondary"], size=11),
+                        height=320,
+                        showlegend=True,
+                        margin=dict(t=44, b=20, l=40, r=40),
+                        legend=dict(
+                            bgcolor="rgba(0,0,0,0)",
+                            bordercolor=T["border"],
+                            borderwidth=1,
+                            font=dict(
+                                size=10,
+                                color=T["text_secondary"]
+                            ),
+                        ),
+                    )
+                    st.plotly_chart(fig_radar, use_container_width=True)
+
+            st.divider()
+
+            # Anomaly rate per cluster
+            if "ml_anomaly_flag" in df_clusters.columns \
+                    or "cluster_label" in df.columns:
+                st.subheader("Anomaly Rate per Cluster")
+
+                # Merge cluster labels onto main df if needed
+                df_with_cl = df.copy()
+                if "cluster_label" not in df_with_cl.columns \
+                        and "station_name" in df_with_cl.columns \
+                        and "cluster_label" in df_clusters.columns:
+                    cl_map = df_clusters.set_index(
+                        "station_name"
+                    )["cluster_label"].to_dict()
+                    df_with_cl["cluster_label"] = (
+                        df_with_cl["station_name"].map(cl_map)
+                    )
+
+                if ("cluster_label" in df_with_cl.columns
+                        and "ml_anomaly_flag" in df_with_cl.columns):
+                    cl_anom = (
+                        df_with_cl.groupby("cluster_label")
+                        .agg(
+                            total      = ("ml_anomaly_flag", "count"),
+                            anomalies  = ("ml_anomaly_flag", "sum"),
+                        )
+                        .reset_index()
+                    )
+                    cl_anom["anomaly_rate_pct"] = (
+                        cl_anom["anomalies"] /
+                        cl_anom["total"] * 100
+                    ).round(1)
+                    cl_anom = cl_anom.sort_values(
+                        "anomaly_rate_pct", ascending=False
+                    )
+
+                    fig_anom_cl = px.bar(
+                        cl_anom,
+                        x="cluster_label",
+                        y="anomaly_rate_pct",
+                        color="cluster_label",
+                        color_discrete_map=CLUSTER_COLOURS,
+                        text_auto=".1f",
+                        template=T["plotly_tmpl"],
+                        labels={
+                            "cluster_label":   "Cluster",
+                            "anomaly_rate_pct":"Anomaly Rate (%)",
+                        },
+                    )
+                    fig_anom_cl.update_traces(textposition="outside")
+                    fig_anom_cl.update_layout(showlegend=False)
+                    chart_layout(
+                        fig_anom_cl,
+                        title="Isolation Forest Anomaly Rate by Cluster",
+                        height=320,
+                    )
+                    st.plotly_chart(
+                        fig_anom_cl, use_container_width=True
+                    )
+                    st.caption(
+                        "A higher anomaly rate in a cluster means "
+                        "conditions in that climate regime are more "
+                        "frequently unusual relative to the training "
+                        "baseline."
+                    )
+
+            st.divider()
+
+            # Cluster detail table
+            st.subheader("Cluster Summary Table")
+            display_map = {
+                "cluster_label":       "Cluster",
+                "station_count":       "Stations",
+                "mean_temperature_c":  "Avg Temp (C)",
+                "mean_humidity_pct":   "Avg Humidity (%)",
+                "mean_wind_speed_kmh": "Avg Wind (km/h)",
+                "mean_pressure_hpa":   "Avg Pressure (hPa)",
+                "latitude":            "Avg Latitude",
+                "longitude":           "Avg Longitude",
+            }
+            avail_d = {k: v for k, v in display_map.items()
+                       if k in profiles.columns}
+            disp_p  = profiles[list(avail_d.keys())].copy()
+            disp_p.rename(columns=avail_d, inplace=True)
+            for col in disp_p.select_dtypes("float").columns:
+                disp_p[col] = disp_p[col].round(1)
+            st.dataframe(
+                disp_p.sort_values("Avg Temp (C)", ascending=False)
+                if "Avg Temp (C)" in disp_p.columns else disp_p,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # Full station assignment
+            with st.expander("View all station cluster assignments"):
+                view_cols = [c for c in [
+                    "station_name", "state", "cluster_label",
+                    "mean_temperature_c", "mean_humidity_pct",
+                    "mean_wind_speed_kmh",
+                ] if c in df_clusters.columns]
+                if view_cols:
+                    cv = df_clusters[view_cols].copy()
+                    cv.rename(columns={
+                        "station_name":       "Station",
+                        "state":              "State",
+                        "cluster_label":      "Cluster",
+                        "mean_temperature_c": "Avg Temp (C)",
+                        "mean_humidity_pct":  "Avg Humidity (%)",
+                        "mean_wind_speed_kmh":"Avg Wind (km/h)",
+                    }, inplace=True)
+                    for col in cv.select_dtypes("float").columns:
+                        cv[col] = cv[col].round(1)
+                    st.dataframe(
+                        cv.sort_values("Cluster")
+                        if "Cluster" in cv.columns else cv,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=400,
+                    )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 8 -- CLIMATE ASSISTANT
+# ─────────────────────────────────────────────────────────────────────────────
+with tab8:
     st.subheader("Climate Assistant")
     st.caption(
         "Ask questions about current Australian climate conditions. "

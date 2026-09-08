@@ -695,7 +695,6 @@ def compute_ensemble(df: pd.DataFrame) -> pd.DataFrame:
 
     return result
 
-
 # ── Station-level summaries ───────────────────────────────────────────────────
 
 def compute_station_anomaly_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -857,6 +856,280 @@ def run_ml_pipeline(df: pd.DataFrame,
 
     save_ml_results(df)
     return df
+
+# ── Phase 6: K-Means Station Clustering ──────────────────────────────────────
+
+CLUSTER_FEATURES = [
+    "mean_temperature_c",
+    "mean_humidity_pct",
+    "mean_wind_speed_kmh",
+    "mean_pressure_hpa",
+    "latitude",
+    "longitude",
+]
+
+KMEANS_CACHE_PATH   = "data/processed/kmeans_model.pkl"
+CLUSTER_RESULT_PATH = "data/processed/station_clusters.parquet"
+N_CLUSTERS          = 6
+
+# Cluster name mapping based on climate characteristics
+# These are assigned automatically after fitting by reading centroids
+CLUSTER_LABELS = [
+    "Tropical",
+    "Arid Desert",
+    "Subtropical",
+    "Temperate Coastal",
+    "Cool Temperate",
+    "Mediterranean",
+]
+
+
+def _auto_name_clusters(centers_df: pd.DataFrame) -> dict:
+    """
+    Automatically assign meaningful climate names to clusters
+    by reading the centroid values.
+
+    Logic:
+    - Highest temperature + lowest humidity = Arid Desert
+    - Highest temperature + highest humidity = Tropical
+    - Lowest temperature = Cool Temperate
+    - Lowest latitude + moderate humidity = Subtropical
+    - Highest pressure + moderate temp = Mediterranean
+    - Remaining = Temperate Coastal
+    """
+    n = len(centers_df)
+    labels = {}
+    used   = set()
+
+    def pick(idx, name):
+        labels[idx] = name
+        used.add(idx)
+
+    # Arid Desert: hottest and driest
+    if "mean_temperature_c" in centers_df.columns \
+            and "mean_humidity_pct" in centers_df.columns:
+        combo  = (
+            centers_df["mean_temperature_c"] -
+            centers_df["mean_humidity_pct"] * 0.3
+        )
+        pick(int(combo.idxmax()), "Arid Desert")
+
+    # Tropical: hottest and most humid (excluding arid)
+    remaining = centers_df.index.difference(list(used))
+    if "mean_temperature_c" in centers_df.columns \
+            and "mean_humidity_pct" in centers_df.columns \
+            and len(remaining) > 0:
+        combo2 = (
+            centers_df.loc[remaining, "mean_temperature_c"] +
+            centers_df.loc[remaining, "mean_humidity_pct"] * 0.5
+        )
+        pick(int(combo2.idxmax()), "Tropical")
+
+    # Cool Temperate: coldest overall
+    remaining = centers_df.index.difference(list(used))
+    if "mean_temperature_c" in centers_df.columns \
+            and len(remaining) > 0:
+        pick(
+            int(centers_df.loc[remaining, "mean_temperature_c"].idxmin()),
+            "Cool Temperate"
+        )
+
+    # Mediterranean: highest pressure among remaining
+    remaining = centers_df.index.difference(list(used))
+    if "mean_pressure_hpa" in centers_df.columns \
+            and len(remaining) > 0:
+        pick(
+            int(centers_df.loc[remaining, "mean_pressure_hpa"].idxmax()),
+            "Mediterranean"
+        )
+
+    # Subtropical: warmest of remaining
+    remaining = centers_df.index.difference(list(used))
+    if "mean_temperature_c" in centers_df.columns \
+            and len(remaining) > 0:
+        pick(
+            int(centers_df.loc[remaining, "mean_temperature_c"].idxmax()),
+            "Subtropical"
+        )
+
+    # Remaining = Temperate Coastal
+    for idx in centers_df.index:
+        if idx not in labels:
+            labels[idx] = "Temperate Coastal"
+
+    return labels
+
+
+def run_kmeans_clustering(df_summary: pd.DataFrame,
+                           n_clusters: int = N_CLUSTERS,
+                           force_retrain: bool = False
+                           ) -> pd.DataFrame:
+    """
+    Phase 6: K-Means station clustering.
+
+    Groups BOM stations into climate profile clusters using their
+    long-run average climate variables plus geographic coordinates.
+
+    Including latitude and longitude ensures geographically similar
+    stations cluster together, producing recognisable Australian
+    climate regions rather than purely statistical groupings.
+
+    Parameters
+    ----------
+    df_summary  : station summary DataFrame from compute_station_summary()
+    n_clusters  : number of clusters (default 6)
+    force_retrain: ignore cached model and retrain
+
+    Returns
+    -------
+    pd.DataFrame
+        df_summary with two new columns added:
+        - cluster_id:    integer cluster index (0 to n_clusters-1)
+        - cluster_label: human readable climate name
+    """
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import StandardScaler
+    import pickle
+
+    if df_summary.empty:
+        print("  K-Means: empty summary DataFrame. Skipping.")
+        return df_summary
+
+    # Select available features
+    available = [c for c in CLUSTER_FEATURES if c in df_summary.columns]
+    missing   = [c for c in CLUSTER_FEATURES if c not in df_summary.columns]
+
+    if missing:
+        print(f"  K-Means: missing features {missing} -- using {available}")
+
+    if len(available) < 2:
+        print("  K-Means: need at least 2 features. Skipping.")
+        return df_summary
+
+    # Clean feature matrix
+    X = df_summary[available].copy()
+    for col in available:
+        X[col] = pd.to_numeric(X[col], errors="coerce")
+
+    # Fill NaN with column median so no stations are dropped
+    for col in available:
+        median = X[col].median()
+        X[col] = X[col].fillna(median)
+
+    n_valid = X.notna().all(axis=1).sum()
+    print(f"  K-Means: clustering {n_valid} stations, "
+          f"{len(available)} features, "
+          f"k={n_clusters}...")
+
+    # Load cached model
+    if (not force_retrain
+            and os.path.exists(KMEANS_CACHE_PATH)):
+        try:
+            with open(KMEANS_CACHE_PATH, "rb") as f:
+                cache    = pickle.load(f)
+                kmeans   = cache["model"]
+                scaler   = cache["scaler"]
+                cl_names = cache["cluster_names"]
+            print("  K-Means: loaded cached model.")
+
+            X_scaled  = scaler.transform(X)
+            cluster_ids = kmeans.predict(X_scaled)
+
+            result = df_summary.copy()
+            result["cluster_id"]    = cluster_ids
+            result["cluster_label"] = result["cluster_id"].map(cl_names)
+            return result
+        except Exception as e:
+            print(f"  K-Means: cache load failed ({e}) -- retraining.")
+
+    # Fit new model
+    scaler   = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    kmeans = KMeans(
+        n_clusters=n_clusters,
+        n_init=20,          # run 20 times and keep best
+        max_iter=500,
+        random_state=42,
+    )
+    kmeans.fit(X_scaled)
+
+    cluster_ids = kmeans.labels_
+
+    # Build centroid DataFrame in original (unscaled) space for naming
+    centers_scaled = kmeans.cluster_centers_
+    centers_orig   = pd.DataFrame(
+        scaler.inverse_transform(centers_scaled),
+        columns=available,
+    )
+
+    # Auto-name clusters
+    cl_names = _auto_name_clusters(centers_orig)
+
+    print(f"  K-Means: cluster assignments:")
+    for cid, cname in sorted(cl_names.items()):
+        count = int((cluster_ids == cid).sum())
+        temp  = centers_orig.get("mean_temperature_c",
+                                  pd.Series([0.0]))[cid]
+        humid = centers_orig.get("mean_humidity_pct",
+                                  pd.Series([0.0]))[cid]
+        print(f"    Cluster {cid} [{cname}]: "
+              f"{count} stations | "
+              f"avg temp {temp:.1f}C | "
+              f"avg humidity {humid:.1f}%")
+
+    # Save cache
+    os.makedirs(os.path.dirname(KMEANS_CACHE_PATH), exist_ok=True)
+    with open(KMEANS_CACHE_PATH, "wb") as f:
+        pickle.dump({
+            "model":         kmeans,
+            "scaler":        scaler,
+            "cluster_names": cl_names,
+        }, f)
+
+    result = df_summary.copy()
+    result["cluster_id"]    = cluster_ids
+    result["cluster_label"] = result["cluster_id"].map(cl_names)
+
+    # Save cluster results to Parquet
+    os.makedirs(os.path.dirname(CLUSTER_RESULT_PATH), exist_ok=True)
+    result.to_parquet(CLUSTER_RESULT_PATH, index=False)
+    print(f"  K-Means: results saved to {CLUSTER_RESULT_PATH}")
+
+    return result
+
+
+def get_cluster_profiles(df_clustered: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute cluster-level summary statistics for the profile chart.
+
+    Returns one row per cluster with mean values of all climate
+    variables, station count, and cluster label.
+    """
+    if "cluster_label" not in df_clustered.columns:
+        return pd.DataFrame()
+
+    agg_dict = {"station_name": "count"}
+    for col in [
+        "mean_temperature_c", "mean_humidity_pct",
+        "mean_wind_speed_kmh", "mean_pressure_hpa",
+        "heat_stress_score", "vulnerability_index",
+        "latitude", "longitude",
+    ]:
+        if col in df_clustered.columns:
+            agg_dict[col] = "mean"
+
+    profiles = (
+        df_clustered.groupby("cluster_label")
+        .agg(agg_dict)
+        .reset_index()
+        .rename(columns={"station_name": "station_count"})
+    )
+
+    for col in profiles.select_dtypes("float").columns:
+        profiles[col] = profiles[col].round(1)
+
+    return profiles
 
 
 # ── Standalone test ───────────────────────────────────────────────────────────
