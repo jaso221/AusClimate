@@ -21,16 +21,14 @@ import os
 
 from ingestion.bom import fetch_all_stations, get_station_coords
 from ingestion.barra2 import fetch_barra2_all_stations
-from ingestion.era5 import fetch_era5_for_stations
 from pipeline.cleaner import clean_bom_data
 from pipeline.feature_eng import compute_station_summary
 from pipeline.storage import save_parquet, load_parquet
-from pipeline.spatial_join import merge_bom_barra2, merge_era5
+from pipeline.spatial_join import merge_bom_barra2
 from config import (
     RAW_DATA_PATH,
     PROCESSED_DATA_PATH,
     BARRA2_CACHE_PATH,
-    ERA5_CACHE_PATH,
     MERGED_DATA_PATH,
     STATION_SUMMARY_PATH,
     STATION_LIST_PATH,
@@ -99,17 +97,6 @@ def run_pipeline(force_refresh: bool = False,
         force_refresh=force_refresh,
     )
 
-    # ── Step 3: ERA5 supplementary data ───────────────────────────
-    # Only runs if ~/.cdsapirc is configured with a valid CDS key
-    # Cached by date — skips if today's data already exists
-    # Returns empty DataFrame gracefully if not configured
-    print("\n[3/5] ERA5 Supplementary Data")
-    print("-" * 40)
-
-    df_era5 = fetch_era5_for_stations(
-        station_coords=station_coords,
-        force_refresh=force_refresh,
-    )
 
     # ── Step 4: Merge all data sources ────────────────────────────
     # BOM: current live conditions
@@ -120,7 +107,6 @@ def run_pipeline(force_refresh: bool = False,
     print("-" * 40)
 
     df_merged = merge_bom_barra2(df_bom, df_barra2)
-    df_merged = merge_era5(df_merged, df_era5)
     save_parquet(df_merged, MERGED_DATA_PATH)
 
     # ── Step 4b: ML Anomaly Detection ─────────────────────────────
@@ -250,7 +236,6 @@ def run_pipeline(force_refresh: bool = False,
           f"{df_bom['state'].nunique() if 'state' in df_bom.columns else 'N/A'}")
     print(f"  BARRA2 stations      : {len(df_barra2)}")
     print(f"  BARRA2 with data     : {barra2_with_data}")
-    print(f"  ERA5 stations        : {len(df_era5)}")
     print(f"  Merged records       : {len(df_merged):,}")
     print(f"  Merged with BARRA2   : {merged_with_barra2:,}")
     print(f"  BARRA2 columns       : {len(barra2_cols)}")
