@@ -189,7 +189,59 @@ def run_pipeline(force_refresh: bool = False,
     except Exception as e:
         print(f"  K-Means error: {e}")
         print("  Continuing without cluster assignments.")
+    
+   
+    # ── Step 5c: ABS Population Data ──────────────────────────────
+    print("\n[5c/5] ABS Population and Disadvantage Data")
+    print("-" * 40)
 
+    try:
+        from ingestion.abs_data import (
+            fetch_abs_data,
+            compute_population_risk,
+        )
+
+        # Build station coordinates from station list
+        station_coords = {}
+        if os.path.exists(STATION_LIST_PATH):
+            stn_list = pd.read_parquet(STATION_LIST_PATH)
+            lat_col  = "lat"      if "lat"      in stn_list.columns \
+                       else "latitude"
+            lon_col  = "lon"      if "lon"      in stn_list.columns \
+                       else "longitude"
+            for _, row in stn_list.iterrows():
+                try:
+                    station_coords[row["station_name"]] = {
+                        "lat": float(row[lat_col]),
+                        "lon": float(row[lon_col]),
+                    }
+                except Exception:
+                    pass
+
+        if station_coords:
+            df_abs = fetch_abs_data(
+                station_coords,
+                force_refresh=force_refresh,
+            )
+            if not df_abs.empty:
+                # Add population risk columns to the station summary
+                df_summary = compute_population_risk(df_summary, df_abs)
+                save_parquet(df_summary, STATION_SUMMARY_PATH)
+
+                critical = int(
+                    (df_summary.get(
+                        "population_risk_category", pd.Series()
+                    ) == "Critical").sum()
+                ) if "population_risk_category" in df_summary.columns \
+                    else 0
+                print(f"  ABS: {critical} stations at critical population risk")
+        else:
+            print("  ABS: no station coordinates found.")
+
+    except Exception as e:
+        print(f"  ABS error: {e}")
+        print("  Continuing without ABS data.")
+        
     save_parquet(df_summary, STATION_SUMMARY_PATH)
 
     # ── Final summary ──────────────────────────────────────────────
@@ -284,3 +336,14 @@ if __name__ == "__main__":
         except Exception:
             pass
     print(f"  AEMO total NEM demand : {aemo_demand:,.0f} MW")
+    
+    abs_matched = 0
+    abs_path    = "data/processed/abs_station_matched.parquet"
+    if os.path.exists(abs_path):
+        try:
+            df_a = pd.read_parquet(abs_path)
+            abs_matched = df_a["matched"].sum() \
+                if "matched" in df_a.columns else len(df_a)
+        except Exception:
+            pass
+    print(f"  ABS stations matched  : {abs_matched}")

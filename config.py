@@ -194,3 +194,42 @@ AEMO_CACHE_PATH    = "data/processed/aemo_latest.parquet"
 AEMO_HISTORY_PATH  = "data/processed/aemo_history.parquet"
 AEMO_CACHE_HOURS   = 0.25  # 15 minutes: AEMO updates every 5 min
 AEMO_HISTORY_LIMIT = 2016  # Keep last 7 days of 5-min intervals
+
+
+# ── ABS Configuration ─────────────────────────────────────────────────────────
+# Australian Bureau of Statistics Data API
+# No API key required as of November 2024
+# Base URL changed November 2024: https://data.api.abs.gov.au/rest/
+# Licence: Creative Commons Attribution 4.0 (CC-BY 4.0)
+
+ABS_API_BASE = "https://data.api.abs.gov.au/rest/data"
+
+# Estimated Resident Population by SA2 (2021 ASGS boundaries)
+ABS_ERP_DATASET  = "ABS,ABS_ANNUAL_ERP_ASGS2021,1.0.0"
+ABS_ERP_URL      = (
+    f"{ABS_API_BASE}/{ABS_ERP_DATASET}"
+    f"/A.TOT_P.SA2.AUS.?"
+    f"format=csvfilewithlabels&startPeriod=2022&endPeriod=2022"
+)
+
+# SEIFA 2021 -- Index of Relative Socio-Economic Disadvantage by SA2
+# Lower score = more disadvantaged
+ABS_SEIFA_DATASET = "ABS,SEIFA_2021_SA2,1.0.0"
+ABS_SEIFA_URL     = (
+    f"{ABS_API_BASE}/{ABS_SEIFA_DATASET}"
+    f"/A.IRSD_SCORE.SA2.AUS.?"
+    f"format=csvfilewithlabels"
+)
+
+# SA2 centroid coordinates from ABS ASGS
+# Used for spatial matching of BOM stations to SA2 regions
+ABS_SA2_CENTROIDS_URL = (
+    "https://data.api.abs.gov.au/rest/data/"
+    "ABS,ABS_REGIONAL_ERP_SA2,1.0.0/A.ERP.SA2.AUS.?"
+    "format=csvfilewithlabels&startPeriod=2022&endPeriod=2022"
+)
+
+# Cache paths
+ABS_CACHE_PATH       = "data/processed/abs_sa2.parquet"
+ABS_STATION_PATH     = "data/processed/abs_station_enriched.parquet"
+ABS_CACHE_HOURS      = 168   # 7 days -- ABS population data changes slowly
