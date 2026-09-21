@@ -11,8 +11,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 
-import os
-print("DEBUG KEY:", repr(os.environ.get("GEMINI_API_KEY")))
 
 import streamlit as st
 import pandas as pd
