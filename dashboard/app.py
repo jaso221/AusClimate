@@ -102,8 +102,7 @@ STAKEHOLDER_MODES = {
         "desc":    "Heat stress monitoring, station vulnerability, risk mapping",
         "primary": "Station Map",
         "tabs":    ["Station Map", "Anomalies", "Data Table", "Population Risk",
-                    "BARRA2 Comparison", "Energy",  "Clustering", "Overview",
-                    "Climate Assistant"],
+                    "BARRA2 Comparison", "Energy",  "Clustering", "Overview"],
     },
     "emergency":  {
         "label":   "Emergency Services",
@@ -111,7 +110,7 @@ STAKEHOLDER_MODES = {
         "desc":    "Live risk flags, compound anomalies, energy-climate alerts",
         "primary": "Anomalies",
         "tabs":    ["Anomalies", "Population Risk", "Energy", "Station Map", "Overview",
-                    "BARRA2 Comparison", "Data Table",  "Clustering", "Climate Assistant"],
+                    "BARRA2 Comparison", "Data Table",  "Clustering"],
     }, 
     "government": {
         "label":   "Government Agency",
@@ -119,8 +118,7 @@ STAKEHOLDER_MODES = {
         "desc":    "Historical baselines, policy data, exports and reporting",
         "primary": "BARRA2 Comparison",
         "tabs":    ["BARRA2 Comparison", "Data Table", "Population Risk","Anomalies",  "Clustering",
-                    "Overview", "Station Map", "Energy",
-                    "Climate Assistant"],
+                    "Overview", "Station Map", "Energy"],
     },
     "researcher": {
         "label":   "Researcher",
@@ -128,8 +126,7 @@ STAKEHOLDER_MODES = {
         "desc":    "SHAP attribution, BARRA2 reanalysis, full data access",
         "primary": "BARRA2 Comparison",
         "tabs":    ["BARRA2 Comparison", "Anomalies",  "Clustering", "Population Risk", "Data Table",
-                    "Station Map", "Overview", "Energy",
-                    "Climate Assistant"],
+                    "Station Map", "Overview", "Energy"],
     },
     "all":        {
         "label":   "Full Platform",
@@ -137,8 +134,7 @@ STAKEHOLDER_MODES = {
         "desc":    "All features and all tabs",
         "primary": "Overview",
         "tabs":    ["Overview", "Station Map", "Anomalies",
-                    "BARRA2 Comparison", "Data Table", "Energy", "Clustering", "Population Risk",
-                    "Climate Assistant"],
+                    "BARRA2 Comparison", "Data Table", "Energy", "Clustering", "Population Risk"],
     },
 } 
 
@@ -923,6 +919,320 @@ def map_layout(fig,
 
     return fig
 
+def build_climate_context() -> str:
+    """
+    Summarise the live pipeline data as text so the assistant's
+    answers are grounded in current conditions rather than guesses.
+    """
+    lines = ["=== LIVE AUSCLIMATE DATA ==="]
+
+    n_stn = df["station_name"].nunique() if "station_name" in df.columns else 0
+    lines.append(f"BOM stations reporting: {n_stn}")
+
+    if "state" in df.columns:
+        states = sorted(df["state"].dropna().unique().tolist())
+        lines.append(f"States covered: {', '.join(states)}")
+
+    if "temperature_c" in df.columns:
+        t = pd.to_numeric(df["temperature_c"], errors="coerce").dropna()
+        if not t.empty:
+            lines.append(
+                f"National temperature: avg {t.mean():.1f}C, "
+                f"max {t.max():.1f}C, min {t.min():.1f}C"
+            )
+
+    if not summary.empty and "mean_temperature_c" in summary.columns:
+        s = summary.copy()
+        s["mean_temperature_c"] = pd.to_numeric(
+            s["mean_temperature_c"], errors="coerce"
+        )
+        top5 = s.nlargest(5, "mean_temperature_c")
+        lines.append("Hottest stations:")
+        for _, r in top5.iterrows():
+            lines.append(
+                f"  {r['station_name']} ({r.get('state','?')}): "
+                f"{r['mean_temperature_c']:.1f}C"
+            )
+
+    if "ml_anomaly_flag" in df.columns:
+        n_anom = int(df["ml_anomaly_flag"].sum())
+        lines.append(f"Isolation Forest anomalies flagged: {n_anom}")
+        if "ml_primary_driver" in df.columns:
+            drivers = (
+                df[df["ml_anomaly_flag"] == True]["ml_primary_driver"]
+                .replace("", np.nan).dropna()
+                .value_counts().head(3)
+            )
+            if not drivers.empty:
+                lines.append("Top anomaly drivers:")
+                for drv, cnt in drivers.items():
+                    lines.append(f"  {drv}: {cnt}")
+
+    if "ensemble_anomaly" in df.columns:
+        n_ens = int(df["ensemble_anomaly"].sum())
+        lines.append(f"High-confidence ensemble anomalies: {n_ens}")
+
+    if "barra2_temp_c" in df.columns:
+        b2 = pd.to_numeric(df["barra2_temp_c"], errors="coerce").dropna()
+        if not b2.empty and "temperature_c" in df.columns:
+            t_now = pd.to_numeric(
+                df["temperature_c"], errors="coerce"
+            ).dropna()
+            if not t_now.empty:
+                lines.append(
+                    f"Current vs BARRA2 2022 baseline: "
+                    f"{t_now.mean() - b2.mean():+.1f}C"
+                )
+
+    if aemo_available and "total_demand_mw" in df_aemo.columns:
+        lines.append(
+            f"Total NEM demand: {df_aemo['total_demand_mw'].sum():,.0f} MW"
+        )
+
+    if not df_clusters.empty and "cluster_label" in df_clusters.columns:
+        lines.append("Climate clusters:")
+        for cl, cnt in df_clusters["cluster_label"].value_counts().items():
+            lines.append(f"  {cl}: {cnt} stations")
+
+    lines.append("=== END ===")
+    return "\n".join(lines)
+
+
+def render_floating_assistant():
+    """
+    Floating chat button pinned to the bottom-right of the screen.
+    Stays visible on every tab because it is rendered once, outside
+    the tab blocks, and pinned with position: fixed so scroll and
+    tab switching never move or hide it.
+    """
+    if "show_assistant" not in st.session_state:
+        st.session_state.show_assistant = False
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    GEMINI_KEY    = os.environ.get("GEMINI_API_KEY", "").strip()
+    ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if ANTHROPIC_KEY:
+        PROVIDER, PROVIDER_LABEL = "anthropic", "Claude"
+    elif GEMINI_KEY:
+        PROVIDER, PROVIDER_LABEL = "gemini", "Gemini"
+    else:
+        PROVIDER, PROVIDER_LABEL = None, ""
+
+    is_open = st.session_state.show_assistant
+
+    st.markdown(f"""
+    <style>
+    .st-key-ac_float {{
+        position: fixed !important;
+        bottom: 22px;
+        right: 22px;
+        z-index: 999999 !important;
+        width: {"380px" if is_open else "60px"} !important;
+        background: {T['bg_card']} !important;
+        border-radius: {"14px" if is_open else "50%"} !important;
+        max-height: 80vh;
+        overflow-y: auto;
+    }}
+    .st-key-ac_float {{
+        background: {T['bg_card']} !important;
+        border-radius: {"14px" if is_open else "50%"} !important;
+    }}
+    .st-key-ac_float [data-testid="stVerticalBlockBorderWrapper"],
+    .st-key-ac_float [data-testid="stVerticalBlock"],
+    .st-key-ac_float > div,
+    .st-key-ac_float > div > div {{
+        background: {T['bg_card']} !important;
+        border: 1px solid {T['border']} !important;
+        border-radius: {"14px" if is_open else "50%"} !important;
+        box-shadow: 0 8px 28px rgba(0,0,0,0.35) !important;
+        overflow: hidden;
+    }}
+    .st-key-ac_float button {{
+        border-radius: {"6px" if is_open else "50%"} !important;
+    }}
+    .st-key-ac_float button {{
+        font-size: 10px !important;
+        padding: 4px 6px !important;
+    }}
+    @media (max-width: 480px) {{
+        .st-key-ac_float {{ width: {"92vw" if is_open else "60px"} !important; }}
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    with st.container(key="ac_float", border=True):
+
+        if not is_open:
+            if st.button("💬", key="ac_open", help="Climate Assistant"):
+                st.session_state.show_assistant = True
+                st.rerun()
+
+        else:
+            top_l, top_r = st.columns([5, 1])
+            with top_l:
+                st.markdown(
+                    f"**Climate Assistant** &nbsp;"
+                    f"<span style='font-size:10px;color:{T['text_muted']}'>"
+                    f"{PROVIDER_LABEL}</span>",
+                    unsafe_allow_html=True,
+                )
+            with top_r:
+                if st.button("✕", key="ac_close"):
+                    st.session_state.show_assistant = False
+                    st.rerun()
+
+            if PROVIDER is None:
+                st.warning("No API key configured.", icon="⚠️")
+                st.caption("Add GEMINI_API_KEY to your .env file.")
+            else:
+                if not st.session_state.chat_history:
+                    examples = [
+                        "Which stations are anomalous?",
+                        "What's the hottest state right now?",
+                        "Any compound heat events?",
+                    ]
+                    ex_cols = st.columns(3)
+                    for i, ex in enumerate(examples):
+                        with ex_cols[i]:
+                            if st.button(
+                                ex, key=f"ac_ex_{i}",
+                                use_container_width=True,
+                                help=ex,
+                            ):
+                                st.session_state.ac_pending = ex
+                                st.rerun()
+
+                msg_box = st.container(height=260)
+                with msg_box:
+                    if not st.session_state.chat_history:
+                        st.caption(
+                            "Ask about live stations, anomalies, "
+                            "or current conditions."
+                        )
+                    for m in st.session_state.chat_history:
+                        with st.chat_message(m["role"]):
+                            st.markdown(m["content"])
+
+                user_input = st.chat_input("Ask a question...", key="ac_input")
+                if "ac_pending" in st.session_state:
+                    user_input = st.session_state.pop("ac_pending")
+
+                if user_input:
+                    st.session_state.chat_history.append(
+                        {"role": "user", "content": user_input}
+                    )
+                    system = (
+                        "You are AusClimate Assistant, built into a "
+                        "real-time Australian climate platform used by "
+                        "councils, emergency services, and agencies.\n"
+                        "Answer only from the data below. Be concise, "
+                        "plain language, no em dashes, no markdown "
+                        "headers, under 150 words unless asked for "
+                        "more detail.\n\n" + build_climate_context()
+                    )
+                    reply = ""
+                    try:
+                        if PROVIDER == "anthropic":
+                            import anthropic
+                            client = anthropic.Anthropic(
+                                api_key=ANTHROPIC_KEY
+                            )
+                            messages = [
+                                {"role": m["role"], "content": m["content"]}
+                                for m in st.session_state.chat_history
+                            ]
+                            resp = client.messages.create(
+                                model="claude-sonnet-4-6",
+                                max_tokens=500,
+                                system=system,
+                                messages=messages,
+                            )
+                            reply = resp.content[0].text
+                        else:
+                            import google.generativeai as genai
+                            genai.configure(api_key=GEMINI_KEY)
+                            model = genai.GenerativeModel(
+                                model_name="gemini-3.6-flash",
+                                system_instruction=system,
+                            )
+                            history = []
+                            for m in st.session_state.chat_history[:-1]:
+                                role = "model" if m["role"] == "assistant" \
+                                    else "user"
+                                history.append({
+                                    "role": role, "parts": [m["content"]],
+                                })
+                            chat  = model.start_chat(history=history)
+                            reply = chat.send_message(user_input).text
+                    except Exception as e:
+                        reply = f"Error: {str(e)[:150]}"
+
+                    st.session_state.chat_history.append(
+                        {"role": "assistant", "content": reply}
+                    )
+                    st.rerun()
+
+    # ── Neutralise ancestor transforms so position:fixed works ─────
+    # The button was already inside Streamlit's DOM, which is fine.
+    # The real bug is that some ancestor div has a CSS transform,
+    # filter, perspective, or contain property set, any of which
+    # creates a new "containing block" and makes position:fixed
+    # behave relative to that ancestor instead of the real viewport.
+    # We do NOT move the element (that breaks React's click handling)
+    # -- we just strip the offending property from every ancestor.
+    st.components.v1.html("""
+    <script>
+    (function() {
+        var fixed = false;
+        function fixAncestors() {
+            if (fixed) return;
+            try {
+                var doc = window.parent.document;
+                var el  = doc.querySelector('.st-key-ac_float');
+                if (!el) return;
+                var node = el.parentElement;
+                var touched = false;
+                while (node && node !== doc.body) {
+                    var cs = window.parent.getComputedStyle(node);
+                    if (cs.transform && cs.transform !== 'none') {
+                        node.style.setProperty('transform', 'none', 'important');
+                        touched = true;
+                    }
+                    if (cs.filter && cs.filter !== 'none') {
+                        node.style.setProperty('filter', 'none', 'important');
+                        touched = true;
+                    }
+                    if (cs.perspective && cs.perspective !== 'none') {
+                        node.style.setProperty('perspective', 'none', 'important');
+                        touched = true;
+                    }
+                    if (cs.contain && cs.contain !== 'none') {
+                        node.style.setProperty('contain', 'none', 'important');
+                        touched = true;
+                    }
+                    if (cs.willChange && cs.willChange !== 'auto') {
+                        node.style.setProperty('will-change', 'auto', 'important');
+                        touched = true;
+                    }
+                    node = node.parentElement;
+                }
+                if (touched) fixed = true;
+            } catch (e) {}
+        }
+        fixAncestors();
+        var attempts = 0;
+        var interval = setInterval(function () {
+            attempts++;
+            fixAncestors();
+            if (fixed || attempts > 10) clearInterval(interval);
+        }, 300);
+    })();
+    </script>
+    """, height=0)
+    
+    
+
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=1800)
@@ -1409,7 +1719,6 @@ ALL_TAB_NAMES = [
     "Energy",
     "Clustering",
     "Population Risk",  
-    "Climate Assistant",
 ]
 
 ALL_TAB_ICONS = {
@@ -1444,7 +1753,6 @@ tab5 = tab_lookup["Data Table"]
 tab6 = tab_lookup["Energy"]
 tab7 = tab_lookup["Clustering"]
 tab8 = tab_lookup["Population Risk"]   
-tab9 = tab_lookup["Climate Assistant"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3904,323 +4212,6 @@ with tab8:
         </div>
         """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 9 - CLIMATE ASSISTANT
-# ─────────────────────────────────────────────────────────────────────────────
-with tab9:
-    st.subheader("Climate Assistant")
-    st.caption(
-        "Ask questions about current Australian climate conditions. "
-        "Every answer is grounded in the live pipeline data loaded above."
-    )
-
-    GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-
-    # ── No key configured ─────────────────────────────────────────
-    if not GEMINI_KEY:
-        st.warning("Gemini API key not found.")
-        st.markdown(f"""
-        <div style="background:{T['bg_card']};
-                    border:1px solid {T['border']};
-                    border-radius:8px; padding:20px 24px;">
-            <div style="font-size:13px; font-weight:700;
-                        color:{T['text_primary']}; margin-bottom:12px;">
-                Quick Setup (2 minutes)
-            </div>
-            <div style="font-size:12px; color:{T['text_secondary']};
-                        line-height:2.0;">
-                1. Get a free key at
-                <a href="https://aistudio.google.com/apikey"
-                   target="_blank"
-                   style="color:{T['accent_light']};">
-                   aistudio.google.com/apikey</a><br>
-                2. Create a file called <code>.env</code>
-                   in the project root<br>
-                3. Add this line: <code>GEMINI_API_KEY=your_key_here</code><br>
-                4. Restart the dashboard
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ── Key configured -- run chatbot ─────────────────────────────
-    else:
-
-        def build_climate_context() -> str:
-            """
-            Build a text summary of the current pipeline data.
-            This is sent to Gemini as context so answers reflect
-            actual live conditions rather than general knowledge.
-            """
-            lines = ["=== LIVE AUSCLIMATE DATA ==="]
-
-            n_stn = df["station_name"].nunique() \
-                if "station_name" in df.columns else 0
-            lines.append(f"BOM stations reporting: {n_stn}")
-
-            if "state" in df.columns:
-                states = sorted(df["state"].dropna().unique().tolist())
-                lines.append(f"States covered: {', '.join(states)}")
-
-            if "temperature_c" in df.columns:
-                t = pd.to_numeric(df["temperature_c"],
-                                  errors="coerce").dropna()
-                if not t.empty:
-                    lines.append(
-                        f"National temperature: "
-                        f"avg {t.mean():.1f}C, "
-                        f"max {t.max():.1f}C, "
-                        f"min {t.min():.1f}C"
-                    )
-
-            if "humidity_pct" in df.columns:
-                h = pd.to_numeric(df["humidity_pct"],
-                                  errors="coerce").dropna()
-                if not h.empty:
-                    lines.append(f"National avg humidity: {h.mean():.0f}%")
-
-            # Hottest stations
-            if not summary.empty \
-                    and "mean_temperature_c" in summary.columns:
-                s = summary.copy()
-                s["mean_temperature_c"] = pd.to_numeric(
-                    s["mean_temperature_c"], errors="coerce"
-                )
-                top5 = s.nlargest(5, "mean_temperature_c")
-                lines.append("5 hottest stations:")
-                for _, r in top5.iterrows():
-                    lines.append(
-                        f"  {r['station_name']} "
-                        f"({r.get('state', '?')}): "
-                        f"{r['mean_temperature_c']:.1f}C"
-                    )
-
-            # Coldest stations
-            if not summary.empty \
-                    and "mean_temperature_c" in summary.columns:
-                bot5 = s.nsmallest(5, "mean_temperature_c")
-                lines.append("5 coldest stations:")
-                for _, r in bot5.iterrows():
-                    lines.append(
-                        f"  {r['station_name']} "
-                        f"({r.get('state', '?')}): "
-                        f"{r['mean_temperature_c']:.1f}C"
-                    )
-
-            # Temperature by state
-            if "state" in df.columns and "temperature_c" in df.columns:
-                st_avg = (
-                    df.groupby("state")["temperature_c"]
-                    .apply(lambda x: pd.to_numeric(x, errors="coerce").mean())
-                    .dropna().sort_values(ascending=False)
-                )
-                lines.append("Average temperature by state:")
-                for state, temp in st_avg.items():
-                    lines.append(f"  {state}: {temp:.1f}C")
-
-            # ML anomalies
-            if "ml_anomaly_flag" in df.columns:
-                n_anom = int(df["ml_anomaly_flag"].sum())
-                lines.append(
-                    f"Isolation Forest anomalies flagged: {n_anom}"
-                )
-                if "ml_severity" in df.columns:
-                    n_sev = int((df["ml_severity"] == "Severe").sum())
-                    lines.append(f"Severe anomalies: {n_sev}")
-                if "ml_primary_driver" in df.columns:
-                    drivers = (
-                        df[df["ml_anomaly_flag"] == True]
-                        ["ml_primary_driver"]
-                        .replace("", np.nan).dropna()
-                        .value_counts().head(3)
-                    )
-                    if not drivers.empty:
-                        lines.append("Top anomaly drivers:")
-                        for drv, cnt in drivers.items():
-                            lines.append(f"  {drv}: {cnt} anomalies")
-
-            # LOF and ensemble
-            if "ensemble_anomaly" in df.columns:
-                n_ens = int(df["ensemble_anomaly"].sum())
-                lines.append(
-                    f"High-confidence ensemble anomalies "
-                    f"(IF and LOF agree): {n_ens}"
-                )
-
-            # Most anomalous stations
-            if "ml_anomaly_flag" in df.columns:
-                anom_stns = (
-                    df[df["ml_anomaly_flag"] == True]
-                    .groupby("station_name")
-                    .size().sort_values(ascending=False).head(5)
-                )
-                if not anom_stns.empty:
-                    lines.append("Stations with most anomalies:")
-                    for stn, cnt in anom_stns.items():
-                        lines.append(f"  {stn}: {cnt} anomalies")
-
-            # BARRA2
-            if "barra2_temp_c" in df.columns:
-                b2 = pd.to_numeric(df["barra2_temp_c"],
-                                   errors="coerce").dropna()
-                if not b2.empty:
-                    lines.append(
-                        f"BARRA2 historical baseline (2022): "
-                        f"avg {b2.mean():.1f}C"
-                    )
-                    if "temperature_c" in df.columns:
-                        diff = t.mean() - b2.mean()
-                        lines.append(
-                            f"Current vs historical: {diff:+.1f}C"
-                        )
-
-            # AEMO
-            if aemo_available and "total_demand_mw" in df_aemo.columns:
-                tot = df_aemo["total_demand_mw"].sum()
-                lines.append(f"Total NEM electricity demand: {tot:,.0f} MW")
-                if "region_name" in df_aemo.columns:
-                    for _, r in df_aemo.iterrows():
-                        lines.append(
-                            f"  {r['region_name']}: "
-                            f"{r['total_demand_mw']:,.0f} MW"
-                        )
-
-            # Clusters
-            if not df_clusters.empty \
-                    and "cluster_label" in df_clusters.columns:
-                cl_counts = df_clusters["cluster_label"].value_counts()
-                lines.append("Climate cluster sizes:")
-                for cl, cnt in cl_counts.items():
-                    lines.append(f"  {cl}: {cnt} stations")
-
-            # ABS
-            if not summary.empty \
-                    and "population_risk_category" in summary.columns:
-                crit = int(
-                    (summary["population_risk_category"] == "Critical").sum()
-                )
-                lines.append(
-                    f"Stations at critical population risk: {crit}"
-                )
-
-            lines.append("=== END OF LIVE DATA ===")
-            return "\n".join(lines)
-
-        SYSTEM_PROMPT = (
-            "You are AusClimate Assistant, an AI built into a professional "
-            "real-time climate analytics platform used by Australian local "
-            "councils, emergency services, government agencies, and "
-            "researchers.\n\n"
-            "Rules:\n"
-            "- Answer only using the live data provided below\n"
-            "- Be concise and professional\n"
-            "- Use plain language suitable for non-technical stakeholders\n"
-            "- Give specific station names and numbers where relevant\n"
-            "- If asked something not in the data, say so clearly\n"
-            "- Never use em dashes or markdown headers\n"
-            "- Keep responses under 200 words unless asked for detail\n\n"
-            + build_climate_context()
-        )
-
-        # Initialise chat history
-        if "chat_history" not in st.session_state:
-            st.session_state.chat_history = []
-
-        # Example question buttons
-        st.markdown("**Try asking:**")
-        examples = [
-            "Which stations are most anomalous right now?",
-            "What is the hottest state?",
-            "How does current temperature compare to 2022?",
-            "Which climate variable causes the most anomalies?",
-            "Which region has the highest electricity demand?",
-            "Summarise the national climate situation",
-        ]
-        ex_cols = st.columns(3)
-        for i, ex in enumerate(examples):
-            with ex_cols[i % 3]:
-                if st.button(ex, key=f"ex_{i}", use_container_width=True):
-                    st.session_state.pending_question = ex
-
-        st.divider()
-
-        # Display chat history
-        for msg in st.session_state.chat_history:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-
-        # Get input (from text box or example button)
-        user_input = st.chat_input("Ask about Australian climate conditions...")
-        if "pending_question" in st.session_state:
-            user_input = st.session_state.pop("pending_question")
-
-        if user_input:
-            # Add user message
-            st.session_state.chat_history.append(
-                {"role": "user", "content": user_input}
-            )
-            with st.chat_message("user"):
-                st.markdown(user_input)
-
-            # Generate response
-            with st.chat_message("assistant"):
-                with st.spinner("Analysing live data..."):
-                    reply = ""
-                    try:
-                        import google.generativeai as genai
-                        genai.configure(api_key=GEMINI_KEY)
-
-                        model = genai.GenerativeModel(
-                            model_name="gemini-3.6-flash",
-                            system_instruction=SYSTEM_PROMPT,
-                        )
-
-                        # Convert chat history to Gemini format
-                        # Gemini uses "user" and "model" roles
-                        history = []
-                        for m in st.session_state.chat_history[:-1]:
-                            role = "model" if m["role"] == "assistant" \
-                                else "user"
-                            history.append({
-                                "role":  role,
-                                "parts": [m["content"]],
-                            })
-
-                        chat     = model.start_chat(history=history)
-                        response = chat.send_message(user_input)
-                        reply    = response.text
-
-                    except ImportError:
-                        reply = (
-                            "Package missing. Run: "
-                            "pip install google-generativeai"
-                        )
-                    except Exception as e:
-                        err = str(e)
-                        if "API_KEY_INVALID" in err or "401" in err:
-                            reply = (
-                                "Invalid API key. Check your .env file "
-                                "and restart the dashboard."
-                            )
-                        elif "429" in err or "quota" in err.lower():
-                            reply = (
-                                "Rate limit reached. Wait a minute "
-                                "and try again."
-                            )
-                        else:
-                            reply = f"Error: {err[:200]}"
-
-                    st.markdown(reply)
-
-            st.session_state.chat_history.append(
-                {"role": "assistant", "content": reply}
-            )
-
-        # Clear button
-        if st.session_state.chat_history:
-            if st.button("Clear conversation", key="clear_chat"):
-                st.session_state.chat_history = []
-                st.rerun()
-
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
@@ -4234,3 +4225,4 @@ with cl:
     )
 with cr:
     st.caption(f"Loaded: {datetime.now().strftime('%H:%M:%S')}")
+render_floating_assistant()
