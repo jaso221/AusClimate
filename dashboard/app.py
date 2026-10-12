@@ -25,6 +25,8 @@ from config import (
     STATION_SUMMARY_PATH,
     BARRA2_CACHE_PATH,
     AEMO_REGION_LABELS,
+    STATION_LIST_PATH,
+    FORECAST_OUTPUT_PATH,
 )
 
 # ── Page config (must be first Streamlit call) ────────────────────────────────
@@ -172,7 +174,10 @@ html, body, [class*="css"] {{
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }}
-#MainMenu, footer, header {{ visibility: hidden; }}
+#MainMenu, footer {{ visibility: hidden; }}
+header {{ visibility: hidden; }}
+header [data-testid*="CollapsedControl" i],
+header [data-testid*="SidebarCollapse" i] {{ display: none !important; }}
 
 /* ── Top accent bar ─────────────────────────────────────────── */
 .stApp::before {{
@@ -798,9 +803,7 @@ p, span, label, div {{
 }}
 </style>
 """
-
 st.markdown(build_css(T), unsafe_allow_html=True)
-
 
 # ── Chart layout helper ───────────────────────────────────────────────────────
 
@@ -861,6 +864,12 @@ def chart_layout(fig,
         template=T["plotly_tmpl"],
     )
     return fig
+
+def hex_to_rgba(hex_color: str, alpha: float = 0.15) -> str:
+    """Convert a '#RRGGBB' hex color to an rgba() string Plotly accepts for fillcolor."""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
 
 def map_layout(fig,
                T: dict,
@@ -1718,7 +1727,8 @@ ALL_TAB_NAMES = [
     "Data Table",
     "Energy",
     "Clustering",
-    "Population Risk",  
+    "Population Risk",
+    "Forecast",  
 ]
 
 ALL_TAB_ICONS = {
@@ -1752,7 +1762,8 @@ tab4 = tab_lookup["BARRA2 Comparison"]
 tab5 = tab_lookup["Data Table"]
 tab6 = tab_lookup["Energy"]
 tab7 = tab_lookup["Clustering"]
-tab8 = tab_lookup["Population Risk"]   
+tab8 = tab_lookup["Population Risk"]  
+tab9 = tab_lookup["Forecast"] 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4212,6 +4223,95 @@ with tab8:
         </div>
         """, unsafe_allow_html=True)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 9 -- FORECAST
+# ─────────────────────────────────────────────────────────────────────────────
+with tab9:
+    st.subheader("24-Hour Forecast")
+
+    df_forecast = pd.DataFrame()
+    if os.path.exists(FORECAST_OUTPUT_PATH):
+        try:
+            df_forecast = pd.read_parquet(FORECAST_OUTPUT_PATH)
+        except Exception:
+            pass
+
+    if df_forecast.empty:
+        st.info("Forecast data not available yet. Run the pipeline to generate it.")
+    else:
+        station_names = sorted(df_forecast["station_name"].unique().tolist())
+
+        col1, col2 = st.columns(2)
+        with col1:
+            fc_station = st.selectbox("Station", options=station_names, key="forecast_station")
+        with col2:
+            fc_variable = st.selectbox(
+                "Variable",
+                options=["temperature_c", "humidity_pct", "wind_speed_kmh"],
+                format_func=lambda v: {
+                    "temperature_c": "Temperature (C)",
+                    "humidity_pct": "Humidity (%)",
+                    "wind_speed_kmh": "Wind Speed (km/h)",
+                }[v],
+                key="forecast_variable",
+            )
+
+        station_fc = df_forecast[
+            (df_forecast["station_name"] == fc_station)
+            & (df_forecast["variable"] == fc_variable)
+        ].sort_values("forecast_datetime")
+
+        if station_fc.empty:
+            st.warning("No forecast available for this station and variable.")
+        else:
+            breaches = station_fc[station_fc["risk_flag"] != "normal"]
+            if not breaches.empty:
+                first_breach = breaches.iloc[0]
+                direction = "exceed" if first_breach["risk_flag"] == "high" else "fall below"
+                st.warning(
+                    f"{fc_variable.replace('_', ' ').title()} is forecast to {direction} "
+                    f"the risk threshold at {fc_station} by "
+                    f"{pd.Timestamp(first_breach['forecast_datetime']).strftime('%A %I:%M %p')}."
+                )
+
+            history = df[df["station_name"] == fc_station][["timestamp", fc_variable]].dropna() \
+                if fc_variable in df.columns and "timestamp" in df.columns else pd.DataFrame()
+            if not history.empty:
+                history["timestamp"] = pd.to_datetime(history["timestamp"], errors="coerce")
+                history = history.sort_values("timestamp").tail(48)
+
+            fig = go.Figure()
+
+            if not history.empty:
+                fig.add_trace(go.Scatter(
+                    x=history["timestamp"], y=history[fc_variable],
+                    mode="lines", name="Observed",
+                    line=dict(color=T["accent"]),
+                ))
+
+            fig.add_trace(go.Scatter(
+                x=station_fc["forecast_datetime"], y=station_fc["predicted_value"],
+                mode="lines", name="Forecast",
+                line=dict(color=T["accent_light"], dash="dash"),
+            ))
+
+            fig.add_trace(go.Scatter(
+                x=pd.concat([station_fc["forecast_datetime"], station_fc["forecast_datetime"][::-1]]),
+                y=pd.concat([station_fc["upper_bound"], station_fc["lower_bound"][::-1]]),
+                fill="toself",
+                fillcolor=hex_to_rgba(T['accent'], 0.15),
+                line=dict(color="rgba(255,255,255,0)"),
+                name="80% confidence interval",
+            ))
+
+            fig = chart_layout(fig, title=f"{fc_station} -- {fc_variable.replace('_',' ').title()}",
+                               height=420, legend=True)
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.dataframe(
+                station_fc[["forecast_datetime", "predicted_value", "lower_bound", "upper_bound", "risk_flag"]],
+                use_container_width=True, hide_index=True,
+            )
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()

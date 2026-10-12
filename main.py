@@ -23,7 +23,7 @@ from ingestion.bom import fetch_all_stations, get_station_coords
 from ingestion.barra2 import fetch_barra2_all_stations
 from pipeline.cleaner import clean_bom_data
 from pipeline.feature_eng import compute_station_summary
-from pipeline.storage import save_parquet, load_parquet
+from pipeline.storage import save_parquet, load_parquet, append_to_history
 from pipeline.spatial_join import merge_bom_barra2
 from config import (
     RAW_DATA_PATH,
@@ -32,6 +32,7 @@ from config import (
     MERGED_DATA_PATH,
     STATION_SUMMARY_PATH,
     STATION_LIST_PATH,
+    BOM_HISTORY_PATH,
 )
 
 import pandas as pd
@@ -49,7 +50,7 @@ def run_pipeline(force_refresh: bool = False,
     # Scrapes BOM observation index pages to discover all stations
     # then fetches each station's JSON in parallel
     # Typical: 700+ stations, completes in 10-30 seconds
-    print("\n[1/5] BOM Live Ingestion")
+    print("\n[1/6] BOM Live Ingestion")
     print("-" * 40)
 
     df_raw = fetch_all_stations(
@@ -69,6 +70,8 @@ def run_pipeline(force_refresh: bool = False,
         return
 
     save_parquet(df_bom, PROCESSED_DATA_PATH)
+    
+    append_to_history(df_bom, BOM_HISTORY_PATH)
 
     # Extract station coordinates for supplementary data fetches
     station_coords = get_station_coords(df_raw)
@@ -83,13 +86,15 @@ def run_pipeline(force_refresh: bool = False,
         for k, v in station_coords.items()
     ])
     save_parquet(station_list, STATION_LIST_PATH)
+    
+    
 
     # ── Step 2: BARRA2 historical baseline ────────────────────────
     # Downloads full Australian climate grid once per variable
     # Vectorized xarray extraction for all stations simultaneously
     # Cached for 24 hours — historical context does not change hourly
     # Cache is validated for actual non-NaN data before being used
-    print("\n[2/5] BARRA2 Historical Baseline")
+    print("\n[2/6] BARRA2 Historical Baseline")
     print("-" * 40)
 
     df_barra2 = fetch_barra2_all_stations(
@@ -103,7 +108,7 @@ def run_pipeline(force_refresh: bool = False,
     # BARRA2: historical baseline + anomaly computation
     #         (temp_anomaly_c, humidity_anomaly_pct, etc.)
     # ERA5: supplementary global context where available
-    print("\n[4/5] Merging Data Sources")
+    print("\n[4/6] Merging Data Sources")
     print("-" * 40)
 
     df_merged = merge_bom_barra2(df_bom, df_barra2)
@@ -115,7 +120,7 @@ def run_pipeline(force_refresh: bool = False,
     # Phase 2: Score every observation, assign severity,
     #          identify primary driver variable per anomaly
     # Phase 3 (future): SHAP attribution
-    print("\n[4b/5] ML Anomaly Detection — Isolation Forest")
+    print("\n[4b/6] ML Anomaly Detection — Isolation Forest")
     print("-" * 40)
 
     try:
@@ -140,7 +145,7 @@ def run_pipeline(force_refresh: bool = False,
     # Fetches 5-minute electricity demand and spot price for
     # the five NEM regions, maps them to BOM states, and
     # computes temperature-demand correlation per region.
-    print("\n[4c/5] AEMO Energy Demand")
+    print("\n[4c/6] AEMO Energy Demand")
     print("-" * 40)
 
     try:
@@ -170,13 +175,13 @@ def run_pipeline(force_refresh: bool = False,
     #   ML anomaly summary columns (if available)
     
     # ── Step 5: Feature engineering ───────────────────────────────
-    print("\n[5/5] Feature Engineering")
+    print("\n[5/6] Feature Engineering")
     print("-" * 40)
 
     df_summary = compute_station_summary(df_merged)
 
     # ── Step 5b: K-Means clustering ────────────────────────────────
-    print("\n[5b/5] K-Means Station Clustering")
+    print("\n[5b/6] K-Means Station Clustering")
     print("-" * 40)
 
     try:
@@ -192,7 +197,7 @@ def run_pipeline(force_refresh: bool = False,
     
    
     # ── Step 5c: ABS Population Data ──────────────────────────────
-    print("\n[5c/5] ABS Population and Disadvantage Data")
+    print("\n[5c/6] ABS Population and Disadvantage Data")
     print("-" * 40)
 
     try:
@@ -243,6 +248,32 @@ def run_pipeline(force_refresh: bool = False,
         print("  Continuing without ABS data.")
         
     save_parquet(df_summary, STATION_SUMMARY_PATH)
+    
+    print("\n[6/6] Forecasting: Temperature, Humidity, Wind Speed")
+    print("-" * 40)
+    try:
+        from forecasting.forecaster import run_forecasting, FORECAST_CACHE_HOURS
+        from config import FORECAST_OUTPUT_PATH
+        from datetime import datetime
+
+        should_run = True
+        if os.path.exists(FORECAST_OUTPUT_PATH) and not force_refresh:
+            age_hours = (datetime.now() - datetime.fromtimestamp(
+                os.path.getmtime(FORECAST_OUTPUT_PATH)
+            )).total_seconds() / 3600
+            if age_hours < FORECAST_CACHE_HOURS:
+                should_run = False
+                print(f"  Forecast cache is {age_hours:.1f}h old, skipping (refreshes every {FORECAST_CACHE_HOURS}h)")
+
+        if should_run:
+            df_forecast = run_forecasting()
+            if not df_forecast.empty:
+                print(f"  Forecasted {df_forecast['station_name'].nunique()} stations")
+            else:
+                print("  No forecasts produced yet -- needs more accumulated BOM history.")
+    except Exception as e:
+        print(f"  Forecasting error: {e}")
+        print("  Continuing without forecast results.")   
 
     # ── Final summary ──────────────────────────────────────────────
     barra2_with_data = (

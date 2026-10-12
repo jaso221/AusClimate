@@ -12,8 +12,8 @@ scipy
 beautifulsoup4
 cdsapi
 scikit-learn
-io
-zipfile
 shap
 python-dotenv>=1.0.0
 google-generativeai>=0.8.0
+prophet
+cmdstanpy

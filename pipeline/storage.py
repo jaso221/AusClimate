@@ -42,3 +42,22 @@ def append_parquet(new_df: pd.DataFrame, path: str,
         # Keep only the most recent max_rows records
         combined = combined.tail(max_rows)
         save_parquet(combined, path)
+        
+def append_to_history(latest_df: pd.DataFrame, history_path: str):
+    """Append the latest BOM snapshot to a rolling 90-day history file."""
+
+    if os.path.exists(history_path):
+        try:
+            existing = pd.read_parquet(history_path)
+            combined = pd.concat([existing, latest_df], ignore_index=True)
+            combined = combined.drop_duplicates(subset=["station_name", "timestamp"])
+        except Exception:
+            combined = latest_df
+    else:
+        combined = latest_df
+
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
+    cutoff = pd.Timestamp.now() - pd.Timedelta(days=90)
+    combined = combined[combined["timestamp"] >= cutoff]
+
+    combined.to_parquet(history_path, index=False)

@@ -136,6 +136,7 @@ AUSTRALIA_BOUNDS = {
 BARRA2_CACHE_HOURS = 168
 
 
+
 # ── ERA5 Configuration ────────────────────────────────────────────────────────
 # ECMWF ERA5 global reanalysis — supplementary fallback.
 # Requires ~/.cdsapirc with valid Copernicus CDS API key.
@@ -152,6 +153,8 @@ BARRA2_CACHE_PATH      = "data/processed/barra2_baseline.parquet"
 MERGED_DATA_PATH       = "data/processed/merged_latest.parquet"
 STATION_SUMMARY_PATH   = "data/processed/station_summary.parquet"
 STATION_LIST_PATH      = "data/processed/station_list.parquet"
+BOM_HISTORY_PATH   = "data/processed/bom_history.parquet"
+FORECAST_OUTPUT_PATH = "data/processed/forecast_results.parquet"
 
 # ── AEMO Configuration ────────────────────────────────────────────────────────
 # Australian Energy Market Operator public dispatch data
@@ -233,3 +236,4 @@ ABS_SA2_CENTROIDS_URL = (
 ABS_CACHE_PATH       = "data/processed/abs_sa2.parquet"
 ABS_STATION_PATH     = "data/processed/abs_station_enriched.parquet"
 ABS_CACHE_HOURS      = 168   # 7 days -- ABS population data changes slowly
+
