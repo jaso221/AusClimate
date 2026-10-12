@@ -1041,28 +1041,19 @@ def render_floating_assistant():
         background: {T['bg_card']} !important;
         border-radius: {"14px" if is_open else "50%"} !important;
         max-height: 80vh;
-        overflow-y: auto;
+        overflow-y: {"visible" if is_open else "hidden"} !important;
     }}
-    .st-key-ac_float {{
-        background: {T['bg_card']} !important;
-        border-radius: {"14px" if is_open else "50%"} !important;
-    }}
-    .st-key-ac_float [data-testid="stVerticalBlockBorderWrapper"],
-    .st-key-ac_float [data-testid="stVerticalBlock"],
-    .st-key-ac_float > div,
-    .st-key-ac_float > div > div {{
+    .st-key-ac_float [data-testid="stVerticalBlockBorderWrapper"] {{
         background: {T['bg_card']} !important;
         border: 1px solid {T['border']} !important;
         border-radius: {"14px" if is_open else "50%"} !important;
         box-shadow: 0 8px 28px rgba(0,0,0,0.35) !important;
-        overflow: hidden;
     }}
     .st-key-ac_float button {{
         border-radius: {"6px" if is_open else "50%"} !important;
     }}
-    .st-key-ac_float button {{
-        font-size: 10px !important;
-        padding: 4px 6px !important;
+    .st-key-ac_msgbox {{
+        overflow-y: auto !important;
     }}
     @media (max-width: 480px) {{
         .st-key-ac_float {{ width: {"92vw" if is_open else "60px"} !important; }}
@@ -1112,7 +1103,7 @@ def render_floating_assistant():
                                 st.session_state.ac_pending = ex
                                 st.rerun()
 
-                msg_box = st.container(height=260)
+                msg_box = st.container(height=260, key="ac_msgbox")
                 with msg_box:
                     if not st.session_state.chat_history:
                         st.caption(
