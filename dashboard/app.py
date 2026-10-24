@@ -6,6 +6,8 @@ University of Technology Sydney -- Capstone 2026
 
 import sys
 import os
+import base64
+from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
@@ -27,12 +29,20 @@ from config import (
     AEMO_REGION_LABELS,
     STATION_LIST_PATH,
     FORECAST_OUTPUT_PATH,
+    BOM_HISTORY_PATH,
 )
+
+from forecasting.hazard_index import compute_station_hazards
+
+try:
+    _page_icon = Image.open(os.path.join(os.path.dirname(__file__), "assets", "logo.png"))
+except FileNotFoundError:
+    _page_icon = "🌡️"
 
 # ── Page config (must be first Streamlit call) ────────────────────────────────
 st.set_page_config(
     page_title="AusClimate",
-    page_icon="🌡️",
+    page_icon=_page_icon,
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -45,20 +55,20 @@ st.set_page_config(
 
 THEMES = {
     "dark": {
-        "bg_primary":     "#0D1117",
-        "bg_card":        "#161B22",
-        "bg_sidebar":     "#0D1117",
-        "bg_input":       "#1C2128",
-        "text_primary":   "#E6EDF3",
-        "text_secondary": "#7D8590",
-        "text_muted":     "#3D444D",
-        "border":         "#21262D",
-        "border_light":   "#30363D",
-        "accent":         "#1F6FEB",
-        "accent_light":   "#388BFD",
-        "success":        "#3FB950",
-        "warning":        "#D29922",
-        "critical":       "#F85149",
+        "bg_primary":     "#101C22",
+        "bg_card":        "#16262A",
+        "bg_sidebar":     "#0B1519",
+        "bg_input":       "#1C2F33",
+        "text_primary":   "#EAF4F2",
+        "text_secondary": "#8FB0AC",
+        "text_muted":     "#56716E",
+        "border":         "#223B40",
+        "border_light":   "#2C4D52",
+        "accent":         "#1D8269",
+        "accent_light":   "#5EEAC0",
+        "success":        "#4ADE80",
+        "warning":        "#F2B04A",
+        "critical":       "#F0727E",
         "plot_bg":        "rgba(0,0,0,0)",
         "paper_bg":       "rgba(0,0,0,0)",
         "plotly_tmpl":    "plotly_dark",
@@ -67,25 +77,25 @@ THEMES = {
         "mapbox_style":   "open-street-map",
     },
     "light": {
-        "bg_primary":     "#F6F8FA",
-        "bg_card":        "#FFFFFF",
-        "bg_sidebar":     "#F6F8FA",
-        "bg_input":       "#F0F3F8",
-        "text_primary":   "#1F2328",
-        "text_secondary": "#636C76",
-        "text_muted":     "#A0AAB4",
-        "border":         "#D1D9E0",
-        "border_light":   "#E6EBF0",
-        "accent":         "#0969DA",
-        "accent_light":   "#1B79E5",
-        "success":        "#1A7F37",
-        "warning":        "#9A6700",
-        "critical":       "#CF222E",
+        "bg_primary":     "#F6F1E7",
+        "bg_card":        "#FFFDF8",
+        "bg_sidebar":     "#F1EADC",
+        "bg_input":       "#EDE4D3",
+        "text_primary":   "#2B2016",
+        "text_secondary": "#766249",
+        "text_muted":     "#A4916F",
+        "border":         "#E3D7C0",
+        "border_light":   "#D8C9AA",
+        "accent":         "#EB8C58",
+        "accent_light":   "#DD7C44",
+        "success":        "#4C9A6B",
+        "warning":        "#C98A2A",
+        "critical":       "#C1443B",
         "plot_bg":        "rgba(0,0,0,0)",
         "paper_bg":       "rgba(0,0,0,0)",
         "plotly_tmpl":    "plotly_white",
-        "grid_color":     "rgba(0,0,0,0.04)",
-        "axis_color":     "rgba(0,0,0,0.06)",
+        "grid_color":     "rgba(43,32,22,0.06)",
+        "axis_color":     "rgba(43,32,22,0.10)",
         "mapbox_style":   "open-street-map",
     },
 }
@@ -176,21 +186,14 @@ html, body, [class*="css"] {{
 }}
 #MainMenu, footer {{ visibility: hidden; }}
 header {{ visibility: hidden; }}
-header [data-testid*="CollapsedControl" i],
-header [data-testid*="SidebarCollapse" i] {{ display: none !important; }}
-
-/* ── Top accent bar ─────────────────────────────────────────── */
-.stApp::before {{
-    content: '';
-    position: fixed;
-    top: 0; left: 0; right: 0;
-    height: 3px;
-    background: linear-gradient(90deg,
-        {T["accent"]} 0%,
-        {T["accent_light"]} 50%,
-        {T["success"]} 100%);
-    z-index: 9999;
+/* No collapse control at all -- sidebar always visible, nothing to break */
+[data-testid="stSidebarCollapseButton"],
+[data-testid*="CollapsedControl" i],
+[data-testid*="SidebarCollapse" i] {{
+    display: none !important;
 }}
+
+
 
 /* ── App background ─────────────────────────────────────────── */
 .stApp {{
@@ -208,8 +211,11 @@ section[data-testid="stSidebar"] {{
     border-right: 1px solid {T["border"]} !important;
     box-shadow: 2px 0 12px rgba(0,0,0,0.15) !important;
 }}
+[data-testid="stSidebarHeader"] {{
+    display: none !important;
+}}
 section[data-testid="stSidebar"] > div {{
-    padding-top: 16px !important;
+    padding-top: 8px !important;
 }}
 section[data-testid="stSidebar"] label,
 section[data-testid="stSidebar"] .stMarkdown p {{
@@ -568,7 +574,7 @@ p, span, label, div {{
 .aus-header-icon {{
     width: 40px;
     height: 40px;
-    background: linear-gradient(135deg, {T["accent"]}, {T["accent_light"]});
+    background: {T["bg_input"]};
     border-radius: 10px;
     display: flex;
     align-items: center;
@@ -576,6 +582,12 @@ p, span, label, div {{
     font-size: 20px;
     flex-shrink: 0;
     box-shadow: 0 4px 12px {T["accent"]}40;
+    overflow: hidden;
+}}
+.aus-header-icon img {{
+    width: 150%;
+    height: 150%;
+    object-fit: cover;
 }}
 .aus-header-title {{
     font-size: 20px;
@@ -663,9 +675,23 @@ p, span, label, div {{
 
 /* Sidebar brand */
 .aus-sidebar-brand {{
-    padding: 8px 4px 16px;
+    padding: 24px 4px 16px;
     border-bottom: 1px solid {T["border"]};
     margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}}
+.aus-sidebar-brand-logo {{
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex-shrink: 0;
+}}
+.aus-sidebar-brand-text {{
+    display: flex;
+    flex-direction: column;
 }}
 .aus-sidebar-brand-title {{
     font-size: 16px;
@@ -1296,6 +1322,21 @@ def load_abs_data():
         safe_read("data/processed/abs_station_matched.parquet"),
         safe_read(STATION_SUMMARY_PATH),
     )
+    
+@st.cache_data(ttl=1800)
+def load_bom_history():
+    if os.path.exists(BOM_HISTORY_PATH):
+        try:
+            return pd.read_parquet(BOM_HISTORY_PATH)
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+
+@st.cache_data(ttl=1800)
+def get_station_hazards(station_name: str, _history_all: pd.DataFrame,
+                         _forecast_df: pd.DataFrame) -> dict:
+    return compute_station_hazards(station_name, _history_all, _forecast_df)
 
 
 # ── Load all data ─────────────────────────────────────────────────────────────
@@ -1304,6 +1345,7 @@ df, summary, df_clusters           = load_all_data()
 df_aemo, df_aemo_bom, df_aemo_hist = load_aemo_data()
 df_shap, df_shap_global            = load_shap_data()
 df_abs_matched, df_abs_summary     = load_abs_data()
+df_bom_history                     = load_bom_history()
 
 # ── Pre-compute availability flags ────────────────────────────────────────────
 
@@ -1417,199 +1459,268 @@ if st.session_state.stakeholder_mode is None:
 MODE     = st.session_state.stakeholder_mode
 MODE_INFO = STAKEHOLDER_MODES.get(MODE, STAKEHOLDER_MODES["all"])
 
+if df.empty:
+    st.warning("No data. Run `python main.py` first.")
+    st.stop()
+
+ALL_TAB_NAMES = [
+    "Overview",
+    "Station Map",
+    "Anomalies",
+    "BARRA2 Comparison",
+    "Data Table",
+    "Energy",
+    "Clustering",
+    "Population Risk",
+    "Forecast",
+]
+
+ordered_tabs = MODE_INFO.get("tabs", ALL_TAB_NAMES)
+for t in ALL_TAB_NAMES:
+    if t not in ordered_tabs:
+        ordered_tabs.append(t)
+
+@st.cache_data
+def load_logo_b64() -> str:
+    logo_path = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
+    with open(logo_path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+try:
+    LOGO_B64 = load_logo_b64()
+except FileNotFoundError:
+    LOGO_B64 = None
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
 
+    logo_tag = f'<img src="data:image/png;base64,{LOGO_B64}" class="aus-sidebar-brand-logo">' if LOGO_B64 else ''
     st.markdown(f"""
     <div class="aus-sidebar-brand">
-        <div class="aus-sidebar-brand-title">
-            AusClimate<span class="aus-sidebar-brand-dot"></span>
+        {logo_tag}
+        <div class="aus-sidebar-brand-text">
+            <div class="aus-sidebar-brand-title">
+                AusClimate<span class="aus-sidebar-brand-dot"></span>
+            </div>
+            <div class="aus-sidebar-brand-sub">Real-Time Climate Analytics</div>
         </div>
-        <div class="aus-sidebar-brand-sub">Real-Time Climate Analytics</div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Theme toggle
-    st.markdown('<p class="aus-section-label">Display</p>',
+    # Views navigation
+    st.markdown('<p class="aus-section-label">Views</p>',
                 unsafe_allow_html=True)
-    btn_label = "Switch to Light Mode" \
-        if st.session_state.theme == "dark" else "Switch to Dark Mode"
-    if st.button(btn_label, use_container_width=True, key="theme_toggle"):
-        st.session_state.theme = (
-            "light" if st.session_state.theme == "dark" else "dark"
-        )
-        st.rerun()
+
+    NAV_SLUGS = {
+        "Overview":          "overview",
+        "Station Map":       "station_map",
+        "Anomalies":         "anomalies",
+        "BARRA2 Comparison": "barra2",
+        "Data Table":        "data_table",
+        "Energy":            "energy",
+        "Clustering":        "clustering",
+        "Population Risk":   "population_risk",
+        "Forecast":          "forecast",
+    }
+    NAV_ICONS = {
+        "Overview":          "dashboard",
+        "Station Map":       "location_on",
+        "Anomalies":         "warning",
+        "BARRA2 Comparison": "layers",
+        "Data Table":        "table_chart",
+        "Energy":            "bolt",
+        "Clustering":        "hub",
+        "Population Risk":   "shield",
+        "Forecast":          "cloud",
+    }
+
+    if ("selected_view" not in st.session_state
+            or st.session_state.selected_view not in ordered_tabs):
+        st.session_state.selected_view = MODE_INFO.get("primary", ordered_tabs[0])
+
+    with st.container(key="nav_list"):
+        for tab_name in ordered_tabs:
+            slug = NAV_SLUGS.get(tab_name, tab_name.lower().replace(" ", "_"))
+            icon = NAV_ICONS.get(tab_name, "circle")
+            with st.container(key=f"nav_{slug}"):
+                if st.button(tab_name, key=f"nav_btn_{slug}",
+                             icon=f":material/{icon}:",
+                             use_container_width=True):
+                    st.session_state.selected_view = tab_name
+                    st.rerun()
+
+    active_slug = NAV_SLUGS.get(
+        st.session_state.selected_view,
+        st.session_state.selected_view.lower().replace(" ", "_"),
+    )
+    st.markdown(f"""
+    <style>
+    .st-key-nav_list [data-testid="stVerticalBlock"] {{
+        gap: 2px !important;
+    }}
+    .st-key-nav_list [data-testid="stElementContainer"] {{
+        margin-bottom: 0 !important;
+    }}
+    [class*="st-key-nav_"] button {{
+        background: transparent !important;
+        border: none !important;
+        border-left: 3px solid transparent !important;
+        box-shadow: none !important;
+        color: {T['text_secondary']} !important;
+        text-align: left !important;
+        justify-content: flex-start !important;
+        gap: 10px !important;
+        font-size: 13px !important;
+        font-weight: 500 !important;
+        padding: 7px 10px !important;
+        min-height: unset !important;
+        height: 34px !important;
+        border-radius: 7px !important;
+        transform: none !important;
+    }}
+    [class*="st-key-nav_"] button * {{
+        justify-content: flex-start !important;
+    }}
+    [class*="st-key-nav_"] button > div {{
+        width: 100% !important;
+    }}
+    [class*="st-key-nav_"] button:hover {{
+        background: {T['border']}60 !important;
+        color: {T['text_primary']} !important;
+        transform: none !important;
+    }}
+    .st-key-nav_{active_slug} button {{
+        background: {T['accent']}1F !important;
+        color: {T['text_primary']} !important;
+        border-left: 3px solid {T['accent']} !important;
+        font-weight: 600 !important;
+    }}
+    .st-key-nav_{active_slug} button svg {{
+        color: {T['accent']} !important;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.divider()
     
-    # Current role indicator
-    st.markdown(f"""
-    <div style="background:{T['bg_input']};
-                border:1px solid {T['border']};
-                border-radius:8px; padding:10px 12px;
-                margin-bottom:12px;">
-        <div style="font-size:9px; font-weight:700;
-                    text-transform:uppercase; letter-spacing:0.1em;
-                    color:{T['text_muted']}; margin-bottom:5px;">
-            Current Role
-        </div>
-        <div style="font-size:14px; font-weight:700;
-                    color:{T['text_primary']};">
-            {MODE_INFO['icon']} {MODE_INFO['label']}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if st.button("Change Role", use_container_width=True,
-                 key="change_role"):
-        st.session_state.stakeholder_mode = None
-        st.rerun()
-
-    st.divider()
-
-    # Data source status
-    st.markdown('<p class="aus-section-label">Data Sources</p>',
+        # Controls
+    st.markdown('<p class="aus-section-label">Controls</p>',
                 unsafe_allow_html=True)
 
-    n_stations  = df["station_name"].nunique() \
-        if not df.empty and "station_name" in df.columns else 0
-    bom_cls     = "aus-badge-live" if n_stations > 0 else "aus-badge-offline"
-    bom_label   = f"LIVE {n_stations:,}" if n_stations > 0 else "OFFLINE"
-    b2_cls      = "aus-badge-live" if barra2_available else "aus-badge-pending"
-    b2_label    = "ACTIVE" if barra2_available else "PENDING"
-    aemo_cls    = "aus-badge-live" if aemo_available else "aus-badge-pending"
-    aemo_label  = "LIVE" if aemo_available else "PENDING"
+    with st.container(key="controls_group"):
+        btn_label = "Switch to Light Mode" \
+            if st.session_state.theme == "dark" else "Switch to Dark Mode"
+        if st.button(btn_label, use_container_width=True, key="theme_toggle"):
+            st.session_state.theme = (
+                "light" if st.session_state.theme == "dark" else "dark"
+            )
+            st.rerun()
 
-    st.markdown(f"""
-    <div class="aus-src-wrap">
-        <div class="aus-src-row">
-            <span class="aus-src-label">Bureau of Meteorology</span>
-            <span class="aus-badge {bom_cls}">{bom_label}</span>
+        st.markdown(f"""
+        <div style="background:{T['bg_input']};
+                    border:1px solid {T['border']};
+                    border-radius:8px; padding:8px 12px;
+                    margin:6px 0;">
+            <div style="font-size:9px; font-weight:700;
+                        text-transform:uppercase; letter-spacing:0.1em;
+                        color:{T['text_muted']}; margin-bottom:3px;">
+                Current Role
+            </div>
+            <div style="font-size:13px; font-weight:700;
+                        color:{T['text_primary']};">
+                {MODE_INFO['icon']} {MODE_INFO['label']}
+            </div>
         </div>
-        <div class="aus-src-row">
-            <span class="aus-src-label">BARRA2 Reanalysis</span>
-            <span class="aus-badge {b2_cls}">{b2_label}</span>
+        """, unsafe_allow_html=True)
+
+        if st.button("Change Role", use_container_width=True,
+                     key="change_role"):
+            st.session_state.stakeholder_mode = None
+            st.rerun()
+
+        n_stations  = df["station_name"].nunique() \
+            if not df.empty and "station_name" in df.columns else 0
+        bom_cls     = "aus-badge-live" if n_stations > 0 else "aus-badge-offline"
+        bom_label   = f"LIVE {n_stations:,}" if n_stations > 0 else "OFFLINE"
+        b2_cls      = "aus-badge-live" if barra2_available else "aus-badge-pending"
+        b2_label    = "ACTIVE" if barra2_available else "PENDING"
+        aemo_cls    = "aus-badge-live" if aemo_available else "aus-badge-pending"
+        aemo_label  = "LIVE" if aemo_available else "PENDING"
+
+        st.markdown(f"""
+        <div class="aus-src-wrap" style="margin:6px 0;">
+            <div class="aus-src-row">
+                <span class="aus-src-label">Bureau of Meteorology</span>
+                <span class="aus-badge {bom_cls}">{bom_label}</span>
+            </div>
+            <div class="aus-src-row">
+                <span class="aus-src-label">BARRA2 Reanalysis</span>
+                <span class="aus-badge {b2_cls}">{b2_label}</span>
+            </div>
+            <div class="aus-src-row">
+                <span class="aus-src-label">AEMO Dispatch</span>
+                <span class="aus-badge {aemo_cls}">{aemo_label}</span>
+            </div>
         </div>
-        <div class="aus-src-row">
-            <span class="aus-src-label">AEMO Dispatch</span>
-            <span class="aus-badge {aemo_cls}">{aemo_label}</span>
-        </div>
-    </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("Refresh BOM Data", use_container_width=True,
+                     key="refresh_btn"):
+            with st.spinner("Refreshing..."):
+                try:
+                    from ingestion.bom import fetch_all_stations, get_station_coords
+                    from pipeline.cleaner import clean_bom_data
+                    from pipeline.feature_eng import compute_station_summary
+                    from pipeline.storage import save_parquet
+                    from pipeline.spatial_join import merge_bom_barra2
+
+                    df_raw   = fetch_all_stations()
+                    df_clean = clean_bom_data(df_raw)
+                    save_parquet(df_clean, PROCESSED_DATA_PATH)
+
+                    b2_cached = pd.DataFrame()
+                    if os.path.exists(BARRA2_CACHE_PATH):
+                        try:
+                            b2_cached = pd.read_parquet(BARRA2_CACHE_PATH)
+                        except Exception:
+                            pass
+
+                    merged = merge_bom_barra2(df_clean, b2_cached)
+                    save_parquet(merged, MERGED_DATA_PATH)
+                    feat = compute_station_summary(merged)
+                    save_parquet(feat, STATION_SUMMARY_PATH)
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Refresh failed: {e}")
+
+    st.markdown("""
+    <style>
+    .st-key-controls_group .stButton > button {
+        padding: 6px 12px !important;
+        font-size: 12px !important;
+    }
+    .st-key-controls_group [data-testid="stVerticalBlock"] {
+        gap: 4px !important;
+    }
+    </style>
     """, unsafe_allow_html=True)
 
-    if st.button("Refresh BOM Data", use_container_width=True,
-                 key="refresh_btn"):
-        with st.spinner("Refreshing..."):
-            try:
-                from ingestion.bom import fetch_all_stations, get_station_coords
-                from pipeline.cleaner import clean_bom_data
-                from pipeline.feature_eng import compute_station_summary
-                from pipeline.storage import save_parquet
-                from pipeline.spatial_join import merge_bom_barra2
-
-                df_raw   = fetch_all_stations()
-                df_clean = clean_bom_data(df_raw)
-                save_parquet(df_clean, PROCESSED_DATA_PATH)
-
-                b2_cached = pd.DataFrame()
-                if os.path.exists(BARRA2_CACHE_PATH):
-                    try:
-                        b2_cached = pd.read_parquet(BARRA2_CACHE_PATH)
-                    except Exception:
-                        pass
-
-                merged = merge_bom_barra2(df_clean, b2_cached)
-                save_parquet(merged, MERGED_DATA_PATH)
-                feat = compute_station_summary(merged)
-                save_parquet(feat, STATION_SUMMARY_PATH)
-                st.cache_data.clear()
-                st.rerun()
-            except Exception as e:
-                st.error(f"Refresh failed: {e}")
-
-    st.divider()
-
-    # Filters
-    if df.empty:
-        st.warning("No data. Run `python main.py` first.")
-        st.stop()
-
-    st.markdown('<p class="aus-section-label">Filters</p>',
-                unsafe_allow_html=True)
-
-    all_states = sorted(df["state"].dropna().unique().tolist()) \
-        if "state" in df.columns else []
-
-    selected_states = st.multiselect(
-        "States", options=all_states, default=all_states,
-    )
-
-    df_state = (
-        df[df["state"].isin(selected_states)]
-        if selected_states and "state" in df.columns else df
-    )
-
-    all_stations_list = sorted(
-        df_state["station_name"].dropna().unique().tolist()
-    ) if "station_name" in df_state.columns else []
-
-    selected_stations = st.multiselect(
-        "Stations",
-        options=all_stations_list,
-        default=all_stations_list[:12]
-        if len(all_stations_list) > 12 else all_stations_list,
-    )
-
-    FEATURE_OPTIONS = {}
-    for col, label in {
-        "temperature_c":  "Temperature (C)",
-        "feels_like_c":   "Feels Like (C)",
-        "humidity_pct":   "Humidity (%)",
-        "wind_speed_kmh": "Wind Speed (km/h)",
-        "gust_kmh":       "Max Gust (km/h)",
-        "pressure_hpa":   "Pressure (hPa)",
-        "dewpoint_c":     "Dewpoint (C)",
-        "rainfall_mm":    "Rainfall (mm)",
-    }.items():
-        if col in df.columns:
-            FEATURE_OPTIONS[label] = col
-
-    selected_label = st.selectbox("Variable", list(FEATURE_OPTIONS.keys()))
-    selected_col   = FEATURE_OPTIONS[selected_label]
-
-    chart_type = st.radio(
-        "Chart Type",
-        ["Bar", "Horizontal Bar", "Line", "Scatter",
-         "Box", "Violin", "Radar", "Heatmap", "Bubble"],
-    )
-
-
-# ── Filter data ───────────────────────────────────────────────────────────────
-
-if selected_stations:
-    df_filtered = df[df["station_name"].isin(selected_stations)].copy()
-else:
-    df_filtered = df_state.copy()
-
-df_filtered[selected_col] = pd.to_numeric(
-    df_filtered[selected_col], errors="coerce"
-)
-
-station_mean = (
-    df_filtered.groupby("station_name")[selected_col]
-    .mean().dropna().reset_index()
-    .sort_values(selected_col, ascending=False)
-)
-station_mean.columns = ["Station", selected_label]
 
 
 # ── Operational header ────────────────────────────────────────────────────────
+
 
 now_str = datetime.now().strftime("%d %b %Y  %H:%M AEST")
 
 st.markdown(f"""
 <div class="aus-header">
     <div class="aus-header-left">
-        <div class="aus-header-icon">🌡️</div>
+        <div class="aus-header-icon">
+            {f'<img src="data:image/png;base64,{LOGO_B64}" alt="logo">' if LOGO_B64 else '🌡️'}
+        </div>
         <div>
             <div class="aus-header-title">AusClimate</div>
             <div class="aus-header-sub">
@@ -1706,62 +1817,85 @@ elif MODE == "council" and not summary.empty:
     </div>
     """, unsafe_allow_html=True)
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
 
-# ── Dynamic tab order based on stakeholder mode ───────────────────────────────
-
-ALL_TAB_NAMES = [
-    "Overview",
-    "Station Map",
-    "Anomalies",
-    "BARRA2 Comparison",
-    "Data Table",
-    "Energy",
-    "Clustering",
-    "Population Risk",
-    "Forecast",  
-]
-
-ALL_TAB_ICONS = {
-    "Overview":          "Overview",
-    "Station Map":       "Station Map",
-    "Anomalies":         "Anomalies",
-    "BARRA2 Comparison": "BARRA2 Comparison",
-    "Data Table":        "Data Table",
-    "Energy":            "Energy",
-    "Clustering":        "Clustering",
-    "Climate Assistant": "Climate Assistant",
-}
-
-# Get ordered tab names for current mode
-ordered_tabs = MODE_INFO.get("tabs", ALL_TAB_NAMES)
-# Ensure all tabs present (in case mode list is missing any)
-for t in ALL_TAB_NAMES:
-    if t not in ordered_tabs:
-        ordered_tabs.append(t)
-
-# Build tab lookup so existing tab content still works
-tab_objects = st.tabs(ordered_tabs)
-tab_lookup  = {name: tab_objects[i]
-               for i, name in enumerate(ordered_tabs)}
-
-# Assign to existing variable names for compatibility
-tab1 = tab_lookup["Overview"]
-tab2 = tab_lookup["Station Map"]
-tab3 = tab_lookup["Anomalies"]
-tab4 = tab_lookup["BARRA2 Comparison"]
-tab5 = tab_lookup["Data Table"]
-tab6 = tab_lookup["Energy"]
-tab7 = tab_lookup["Clustering"]
-tab8 = tab_lookup["Population Risk"]  
-tab9 = tab_lookup["Forecast"] 
+selected_view = st.session_state.selected_view
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 1 -- OVERVIEW
 # ─────────────────────────────────────────────────────────────────────────────
-with tab1:
+if selected_view == "Overview":
     st.subheader("Live Australian Climate Overview")
+
+    metrics_slot = st.container()
+
+    with st.expander("Filters & chart options", expanded=True):
+        f1, f2 = st.columns(2)
+
+        with f1:
+            all_states = sorted(df["state"].dropna().unique().tolist()) \
+                if "state" in df.columns else []
+
+            selected_states = st.multiselect(
+                "States", options=all_states, default=all_states,
+            )
+
+            df_state = (
+                df[df["state"].isin(selected_states)]
+                if selected_states and "state" in df.columns else df
+            )
+
+            all_stations_list = sorted(
+                df_state["station_name"].dropna().unique().tolist()
+            ) if "station_name" in df_state.columns else []
+
+            selected_stations = st.multiselect(
+                "Stations",
+                options=all_stations_list,
+                default=all_stations_list[:12]
+                if len(all_stations_list) > 12 else all_stations_list,
+            )
+
+        with f2:
+            FEATURE_OPTIONS = {}
+            for col, label in {
+                "temperature_c":  "Temperature (C)",
+                "feels_like_c":   "Feels Like (C)",
+                "humidity_pct":   "Humidity (%)",
+                "wind_speed_kmh": "Wind Speed (km/h)",
+                "gust_kmh":       "Max Gust (km/h)",
+                "pressure_hpa":   "Pressure (hPa)",
+                "dewpoint_c":     "Dewpoint (C)",
+                "rainfall_mm":    "Rainfall (mm)",
+            }.items():
+                if col in df.columns:
+                    FEATURE_OPTIONS[label] = col
+
+            selected_label = st.selectbox("Variable", list(FEATURE_OPTIONS.keys()))
+            selected_col   = FEATURE_OPTIONS[selected_label]
+
+            chart_type = st.radio(
+                "Chart Type",
+                ["Bar", "Horizontal Bar", "Line", "Scatter",
+                 "Box", "Violin", "Radar", "Heatmap", "Bubble"],
+                horizontal=True,
+            )
+
+    if selected_stations:
+        df_filtered = df[df["station_name"].isin(selected_stations)].copy()
+    else:
+        df_filtered = df_state.copy()
+
+    df_filtered[selected_col] = pd.to_numeric(
+        df_filtered[selected_col], errors="coerce"
+    )
+
+    station_mean = (
+        df_filtered.groupby("station_name")[selected_col]
+        .mean().dropna().reset_index()
+        .sort_values(selected_col, ascending=False)
+    )
+    station_mean.columns = ["Station", selected_label]
 
     vals = pd.to_numeric(df_filtered[selected_col], errors="coerce").dropna()
     avg_val = vals.mean() if not vals.empty else 0
@@ -1777,13 +1911,14 @@ with tab1:
     n_states   = df["state"].nunique() if "state" in df.columns else 0
     n_records  = len(df)
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Stations",        f"{n_stations:,}")
-    c2.metric("States",          n_states)
-    c3.metric("Records",         f"{n_records:,}")
-    c4.metric(f"Avg {selected_label}", f"{avg_val:.1f}")
-    c5.metric("Highest",         f"{max_val:.1f}", max_station)
-    c6.metric("Lowest",          f"{min_val:.1f}")
+    with metrics_slot:
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Stations",        f"{n_stations:,}")
+        c2.metric("States",          n_states)
+        c3.metric("Records",         f"{n_records:,}")
+        c4.metric(f"Avg {selected_label}", f"{avg_val:.1f}")
+        c5.metric("Highest",         f"{max_val:.1f}", max_station)
+        c6.metric("Lowest",          f"{min_val:.1f}")
 
     st.divider()
 
@@ -2086,7 +2221,7 @@ with tab1:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 2 -- STATION MAP
 # ─────────────────────────────────────────────────────────────────────────────
-with tab2:
+if selected_view == "Station Map":
     st.subheader("National Station Coverage")
 
     if "latitude" not in df.columns or "longitude" not in df.columns:
@@ -2176,7 +2311,7 @@ with tab2:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 3 -- ANOMALIES
 # ─────────────────────────────────────────────────────────────────────────────
-with tab3:
+if selected_view == "Anomalies":
 
     feat_labels = {
         "temperature_c":  "Temperature",
@@ -2986,7 +3121,7 @@ with tab3:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 4 -- BARRA2 COMPARISON
 # ─────────────────────────────────────────────────────────────────────────────
-with tab4:
+if selected_view == "BARRA2 Comparison":
     st.subheader("BOM Live vs BARRA2 Historical Baseline")
 
     if not barra2_available:
@@ -3113,7 +3248,7 @@ with tab4:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 5 -- DATA TABLE
 # ─────────────────────────────────────────────────────────────────────────────
-with tab5:
+if selected_view == "Data Table":
     st.subheader("Station Summary Table")
 
     if summary.empty:
@@ -3199,7 +3334,7 @@ with tab5:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 6 -- ENERGY (AEMO)
 # ─────────────────────────────────────────────────────────────────────────────
-with tab6:
+if selected_view == "Energy":
     st.subheader("Energy Demand vs Climate Conditions")
     st.caption(
         "AEMO 5-minute dispatch data for NEM regions overlaid with "
@@ -3399,7 +3534,7 @@ with tab6:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 7 -- CLUSTERING
 # ─────────────────────────────────────────────────────────────────────────────
-with tab7:
+if selected_view == "Clustering":
     st.subheader("Climate Station Clustering")
     st.caption(
         "K-Means clustering groups the 700+ BOM stations into distinct "
@@ -3816,7 +3951,7 @@ with tab7:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 8 -- POPULATION RISK (ABS)
 # ─────────────────────────────────────────────────────────────────────────────
-with tab8:
+if selected_view == "Population Risk":
     st.subheader("Population Risk")
     st.caption(
         "Combines live climate conditions with ABS population data. "
@@ -4217,7 +4352,7 @@ with tab8:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 9 -- FORECAST
 # ─────────────────────────────────────────────────────────────────────────────
-with tab9:
+if selected_view == "Forecast":
     st.subheader("24-Hour Forecast")
 
     df_forecast = pd.DataFrame()
@@ -4231,11 +4366,13 @@ with tab9:
         st.info("Forecast data not available yet. Run the pipeline to generate it.")
     else:
         station_names = sorted(df_forecast["station_name"].unique().tolist())
+        fc_station = st.selectbox("Station", options=station_names, key="forecast_station")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            fc_station = st.selectbox("Station", options=station_names, key="forecast_station")
-        with col2:
+        weather_tab, fire_tab, flood_tab, heat_tab = st.tabs(
+            ["Weather Forecast", "Bushfire Risk", "Flood Risk", "Heatwave Risk"]
+        )
+
+        with weather_tab:
             fc_variable = st.selectbox(
                 "Variable",
                 options=["temperature_c", "humidity_pct", "wind_speed_kmh"],
@@ -4247,62 +4384,322 @@ with tab9:
                 key="forecast_variable",
             )
 
-        station_fc = df_forecast[
-            (df_forecast["station_name"] == fc_station)
-            & (df_forecast["variable"] == fc_variable)
-        ].sort_values("forecast_datetime")
+            station_fc = df_forecast[
+                (df_forecast["station_name"] == fc_station)
+                & (df_forecast["variable"] == fc_variable)
+            ].sort_values("forecast_datetime")
 
-        if station_fc.empty:
-            st.warning("No forecast available for this station and variable.")
-        else:
-            breaches = station_fc[station_fc["risk_flag"] != "normal"]
-            if not breaches.empty:
-                first_breach = breaches.iloc[0]
-                direction = "exceed" if first_breach["risk_flag"] == "high" else "fall below"
-                st.warning(
-                    f"{fc_variable.replace('_', ' ').title()} is forecast to {direction} "
-                    f"the risk threshold at {fc_station} by "
-                    f"{pd.Timestamp(first_breach['forecast_datetime']).strftime('%A %I:%M %p')}."
-                )
+            if station_fc.empty:
+                st.warning("No forecast available for this station and variable.")
+            else:
+                breaches = station_fc[station_fc["risk_flag"] != "normal"]
+                if not breaches.empty:
+                    first_breach = breaches.iloc[0]
+                    direction = "exceed" if first_breach["risk_flag"] == "high" else "fall below"
+                    st.warning(
+                        f"{fc_variable.replace('_', ' ').title()} is forecast to {direction} "
+                        f"the risk threshold at {fc_station} by "
+                        f"{pd.Timestamp(first_breach['forecast_datetime']).strftime('%A %I:%M %p')}."
+                    )
 
-            history = df[df["station_name"] == fc_station][["timestamp", fc_variable]].dropna() \
-                if fc_variable in df.columns and "timestamp" in df.columns else pd.DataFrame()
-            if not history.empty:
-                history["timestamp"] = pd.to_datetime(history["timestamp"], errors="coerce")
-                history = history.sort_values("timestamp").tail(48)
+                history = df[df["station_name"] == fc_station][["timestamp", fc_variable]].dropna() \
+                    if fc_variable in df.columns and "timestamp" in df.columns else pd.DataFrame()
+                if not history.empty:
+                    history["timestamp"] = pd.to_datetime(history["timestamp"], errors="coerce")
+                    history = history.sort_values("timestamp").tail(48)
 
-            fig = go.Figure()
+                fig = go.Figure()
 
-            if not history.empty:
+                if not history.empty:
+                    fig.add_trace(go.Scatter(
+                        x=history["timestamp"], y=history[fc_variable],
+                        mode="lines", name="Observed",
+                        line=dict(color=T["accent"]),
+                    ))
+
                 fig.add_trace(go.Scatter(
-                    x=history["timestamp"], y=history[fc_variable],
-                    mode="lines", name="Observed",
-                    line=dict(color=T["accent"]),
+                    x=station_fc["forecast_datetime"], y=station_fc["predicted_value"],
+                    mode="lines", name="Forecast",
+                    line=dict(color=T["accent_light"], dash="dash"),
                 ))
 
-            fig.add_trace(go.Scatter(
-                x=station_fc["forecast_datetime"], y=station_fc["predicted_value"],
-                mode="lines", name="Forecast",
-                line=dict(color=T["accent_light"], dash="dash"),
-            ))
+                fig.add_trace(go.Scatter(
+                    x=pd.concat([station_fc["forecast_datetime"], station_fc["forecast_datetime"][::-1]]),
+                    y=pd.concat([station_fc["upper_bound"], station_fc["lower_bound"][::-1]]),
+                    fill="toself",
+                    fillcolor=hex_to_rgba(T['accent'], 0.15),
+                    line=dict(color="rgba(255,255,255,0)"),
+                    name="80% confidence interval",
+                ))
 
-            fig.add_trace(go.Scatter(
-                x=pd.concat([station_fc["forecast_datetime"], station_fc["forecast_datetime"][::-1]]),
-                y=pd.concat([station_fc["upper_bound"], station_fc["lower_bound"][::-1]]),
-                fill="toself",
-                fillcolor=hex_to_rgba(T['accent'], 0.15),
-                line=dict(color="rgba(255,255,255,0)"),
-                name="80% confidence interval",
-            ))
+                fig = chart_layout(fig, title=f"{fc_station} -- {fc_variable.replace('_',' ').title()}",
+                                   height=420, legend=True)
+                st.plotly_chart(fig, use_container_width=True)
 
-            fig = chart_layout(fig, title=f"{fc_station} -- {fc_variable.replace('_',' ').title()}",
-                               height=420, legend=True)
-            st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(
+                    station_fc[["forecast_datetime", "predicted_value", "lower_bound", "upper_bound", "risk_flag"]],
+                    use_container_width=True, hide_index=True,
+                )
 
-            st.dataframe(
-                station_fc[["forecast_datetime", "predicted_value", "lower_bound", "upper_bound", "risk_flag"]],
-                use_container_width=True, hide_index=True,
-            )
+        hazards = get_station_hazards(fc_station, df_bom_history, df_forecast)
+
+        with fire_tab:
+            if not hazards["available"]:
+                st.info(hazards["reason"])
+            else:
+                st.caption(
+                    "Estimates how easily a fire could start and spread here, "
+                    "based on forecast heat, humidity and wind, combined with "
+                    "how dry the vegetation already is."
+                )
+
+                h1, h2, h3 = st.columns(3)
+                h1.metric(
+                    "Dryness Score (today)", f"{hazards['today_drought_factor']:.1f} / 10",
+                    help="How dry the vegetation and fuel already are, on a "
+                         "0-10 scale. Higher means drier and more ready to "
+                         "burn. This is the 'Drought Factor' in the official "
+                         "fire danger formula."
+                )
+                h2.metric(
+                    "Dryness Score (forecast)", f"{hazards['forecast_drought_factor']:.1f} / 10",
+                    help="The same dryness score, projected forward using "
+                         "tomorrow's forecast temperature and rainfall."
+                )
+                h3.metric(
+                    "Soil Dryness (KBDI)", f"{hazards['today_kbdi']:.0f} / 203",
+                    help="Keetch-Byram Drought Index -- a longer-running "
+                         "0-203 soil moisture scale. 0 means recently "
+                         "soaked, 203 is as dry as the scale goes. The "
+                         "dryness score above is partly built from this."
+                )
+
+                ffdi_hourly = hazards["ffdi_hourly"]
+                peak = ffdi_hourly.loc[ffdi_hourly["ffdi"].idxmax()]
+
+                if peak["ffdi_rating"] == "Low-Moderate":
+                    st.success(
+                        f"Fire danger stays Low-Moderate across the forecast "
+                        f"window (peak score {peak['ffdi']:.0f})."
+                    )
+                else:
+                    st.warning(
+                        f"Peak forecast fire danger: {peak['ffdi']:.0f} "
+                        f"({peak['ffdi_rating']}) at "
+                        f"{pd.Timestamp(peak['forecast_datetime']).strftime('%A %I:%M %p')}."
+                    )
+
+                fig = go.Figure()
+                fig.add_hrect(y0=0, y1=24, fillcolor=T["success"], opacity=0.08, line_width=0)
+                fig.add_hrect(y0=24, y1=74, fillcolor=T["warning"], opacity=0.08, line_width=0)
+                fig.add_hrect(y0=74, y1=max(140, float(ffdi_hourly["ffdi"].max()) + 20),
+                              fillcolor=T["critical"], opacity=0.08, line_width=0)
+                fig.add_trace(go.Scatter(
+                    x=ffdi_hourly["forecast_datetime"], y=ffdi_hourly["ffdi"],
+                    mode="lines+markers", name="Fire Danger Index",
+                    line=dict(color=T["critical"]),
+                ))
+                fig = chart_layout(fig, title=f"{fc_station} -- Fire Danger Forecast",
+                                   height=360, legend=False)
+                fig.update_yaxes(title_text="Fire Danger Index", rangemode="tozero")
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.dataframe(
+                    ffdi_hourly[["forecast_datetime", "temperature_c", "humidity_pct",
+                                 "wind_speed_kmh", "ffdi", "ffdi_rating"]],
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "forecast_datetime": st.column_config.DatetimeColumn("Time", format="ddd, h a"),
+                        "temperature_c": st.column_config.NumberColumn("Temp (C)", format="%.1f"),
+                        "humidity_pct": st.column_config.NumberColumn("Humidity (%)", format="%.0f"),
+                        "wind_speed_kmh": st.column_config.NumberColumn("Wind (km/h)", format="%.0f"),
+                        "ffdi": st.column_config.NumberColumn("Fire Danger Index", format="%.0f"),
+                        "ffdi_rating": st.column_config.TextColumn("Rating"),
+                    },
+                )
+
+                with st.expander("What do these terms mean?"):
+                    st.markdown(
+                        "- **Fire Danger Index (FFDI)** -- the official "
+                        "Australian fire danger score. Combines heat, "
+                        "humidity, wind and dryness into one number.\n"
+                        "- **Dryness Score / Drought Factor** -- a 0-10 "
+                        "score for how primed the vegetation is to burn, "
+                        "based on recent rainfall and heat.\n"
+                        "- **KBDI** -- Keetch-Byram Drought Index, a "
+                        "longer-term 0-203 soil moisture scale that the "
+                        "dryness score is partly built from.\n\n"
+                        "**Rating bands**, in increasing order of danger: "
+                        "Low-Moderate, High, Very High, Severe, Extreme, "
+                        "Catastrophic, matching the official Australian "
+                        "Fire Danger Rating System."
+                    )
+
+        with flood_tab:
+            if not hazards["available"]:
+                st.info(hazards["reason"])
+            elif not hazards["rainfall_forecast_available"]:
+                st.info(
+                    "Rainfall isn't being forecast yet. Add `rainfall_mm` to "
+                    "FORECAST_VARIABLES in forecasting/forecaster.py and rerun "
+                    "the pipeline to enable flood risk."
+                )
+            else:
+                st.caption(
+                    "A localised heavy-rainfall indicator, not an official "
+                    "flood forecast. Combines forecast rainfall with how "
+                    "saturated the ground already is."
+                )
+
+                flood_hourly = hazards["flood_hourly"]
+                peak = flood_hourly.loc[flood_hourly["flood_score"].idxmax()]
+
+                c1, c2 = st.columns(2)
+                c1.metric(
+                    "Peak Risk Score", f"{peak['flood_score']:.1f} / 10",
+                    help="A 0-10 indicative score combining forecast "
+                         "rainfall intensity with how saturated the ground "
+                         "already is."
+                )
+                c2.metric("Peak Risk Rating", peak["flood_rating"])
+
+                if peak["flood_rating"] == "Low":
+                    st.success("Flash flood risk stays Low across the forecast window.")
+                else:
+                    st.warning(
+                        f"Peak flash flood risk: {peak['flood_rating']} at "
+                        f"{pd.Timestamp(peak['forecast_datetime']).strftime('%A %I:%M %p')}, "
+                        f"{peak['rainfall_mm']:.0f}mm forecast that hour."
+                    )
+
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    x=flood_hourly["forecast_datetime"], y=flood_hourly["rainfall_mm"],
+                    name="Forecast rainfall (mm)", marker_color=T["accent"],
+                ))
+                fig = chart_layout(fig, title=f"{fc_station} -- Forecast Rainfall",
+                                   height=300, legend=False)
+                fig.update_yaxes(title_text="Rainfall (mm)")
+                st.plotly_chart(fig, use_container_width=True)
+
+                fig2 = go.Figure()
+                fig2.add_hrect(y0=0, y1=2.5, fillcolor=T["success"], opacity=0.08, line_width=0)
+                fig2.add_hrect(y0=2.5, y1=7.5, fillcolor=T["warning"], opacity=0.08, line_width=0)
+                fig2.add_hrect(y0=7.5, y1=10, fillcolor=T["critical"], opacity=0.08, line_width=0)
+                fig2.add_trace(go.Scatter(
+                    x=flood_hourly["forecast_datetime"], y=flood_hourly["flood_score"],
+                    mode="lines+markers", name="Risk Score",
+                    line=dict(color=T["accent_light"]),
+                ))
+                fig2 = chart_layout(fig2, title=f"{fc_station} -- Flash Flood Risk Score",
+                                    height=300, legend=False)
+                fig2.update_yaxes(title_text="Risk Score (0-10)", range=[0, 10])
+                st.plotly_chart(fig2, use_container_width=True)
+
+                st.dataframe(
+                    flood_hourly[["forecast_datetime", "rainfall_mm", "flood_score", "flood_rating"]],
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "forecast_datetime": st.column_config.DatetimeColumn("Time", format="ddd, h a"),
+                        "rainfall_mm": st.column_config.NumberColumn("Rainfall (mm)", format="%.1f"),
+                        "flood_score": st.column_config.NumberColumn("Risk Score", format="%.1f"),
+                        "flood_rating": st.column_config.TextColumn("Rating"),
+                    },
+                )
+
+                with st.expander("What do these terms mean?"):
+                    st.markdown(
+                        "- **Risk Score** -- a 0-10 indicative score, not an "
+                        "official flood warning. Built from how much rain is "
+                        "forecast and how saturated the ground already is.\n"
+                        "- Real flood forecasting needs catchment and "
+                        "river-level data this dashboard doesn't have. "
+                        "Treat this as an early, localised heads-up rather "
+                        "than a flood warning."
+                    )
+
+        with heat_tab:
+            if not hazards["available"]:
+                st.info(hazards["reason"])
+            else:
+                st.caption(
+                    "Compares the forecast temperature against what's normal "
+                    "and what's extreme for this specific station, rather "
+                    "than a fixed number that would mean something different "
+                    "in every town."
+                )
+
+                h1, h2, h3 = st.columns(3)
+                h1.metric(
+                    "Heat Risk Score", f"{hazards['ehf']:.1f}",
+                    help="The Excess Heat Factor. Above 0 means the forecast "
+                         "is hotter than this station's recent average; the "
+                         "higher above 0, the more intense the heat event."
+                )
+                h2.metric(
+                    "Forecast Avg Temp", f"{hazards['forecast_temp_mean']:.1f} C",
+                    help="The average temperature across the next 24 hours "
+                         "of forecast."
+                )
+                h3.metric(
+                    "Extreme Heat Threshold", f"{hazards['t95']:.1f} C",
+                    help="This station's own historical extreme: only 5% of "
+                         "days in its recorded history have been hotter "
+                         "than this."
+                )
+
+                if hazards["ehf_rating"] == "No Heatwave":
+                    st.success(f"No heatwave signal for the forecast window ({hazards['ehf_rating']}).")
+                else:
+                    st.warning(f"{hazards['ehf_rating']} forecast for this station.")
+
+                comp_fig = go.Figure()
+                comp_fig.add_trace(go.Bar(
+                    x=["Last 30 Days Avg", "Forecast Avg", "Extreme Threshold"],
+                    y=[hazards["t30_avg"], hazards["forecast_temp_mean"], hazards["t95"]],
+                    marker_color=[T["accent"], T["warning"], T["critical"]],
+                    text=[f"{v:.1f} C" for v in
+                          [hazards["t30_avg"], hazards["forecast_temp_mean"], hazards["t95"]]],
+                    textposition="outside",
+                ))
+                comp_fig = chart_layout(comp_fig, title=f"{fc_station} -- Forecast vs Normal vs Extreme",
+                                        height=320, legend=False)
+                comp_fig.update_yaxes(title_text="Temperature (C)")
+                st.plotly_chart(comp_fig, use_container_width=True)
+
+                daily_recent = hazards["daily_recent"]
+                trend_fig = go.Figure()
+                trend_fig.add_trace(go.Scatter(
+                    x=daily_recent["date"], y=daily_recent["temp_mean"],
+                    mode="lines", name="Daily avg temp",
+                    line=dict(color=T["accent"]),
+                ))
+                trend_fig.add_hline(y=hazards["t95"], line_dash="dash", line_color=T["critical"],
+                                    annotation_text="Extreme threshold", annotation_position="top left")
+                trend_fig.add_hline(y=hazards["forecast_temp_mean"], line_dash="dot", line_color=T["warning"],
+                                    annotation_text="Forecast avg", annotation_position="bottom left")
+                trend_fig = chart_layout(trend_fig, title=f"{fc_station} -- Recent Daily Temperatures",
+                                         height=320, legend=False)
+                trend_fig.update_yaxes(title_text="Temperature (C)")
+                st.plotly_chart(trend_fig, use_container_width=True)
+
+                with st.expander("What do these ratings mean?"):
+                    st.markdown(
+                        "- **No Heatwave** -- forecast is within the normal "
+                        "range for this station.\n"
+                        "- **Low-Intensity Heatwave** -- unusually warm; "
+                        "minor risk, mainly for vulnerable groups.\n"
+                        "- **Severe Heatwave** -- significantly hotter than "
+                        "normal; health risk increases for most people.\n"
+                        "- **Extreme Heatwave** -- rare, dangerous heat for "
+                        "this location; precautions recommended for "
+                        "everyone.\n\n"
+                        "Adapted from the Excess Heat Factor (EHF), the "
+                        "method BOM and health agencies use, which is "
+                        "defined as a period average rather than an hourly "
+                        "reading, so this is one assessment for the whole "
+                        "24-hour forecast window."
+                    )
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()

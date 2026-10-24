@@ -30,6 +30,7 @@ FORECAST_VARIABLES = {
     "temperature_c":   {"floor": -10, "cap": 55},
     "humidity_pct":    {"floor": 0,   "cap": 100},
     "wind_speed_kmh":  {"floor": 0,   "cap": 200},
+    "rainfall_mm":     {"floor": 0,   "cap": None},
 }
 
 FORECAST_HORIZON_HOURS = 24
