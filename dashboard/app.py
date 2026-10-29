@@ -177,6 +177,14 @@ def build_css(T: dict) -> str:
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
+:root {{
+    --st-background-color: {T["bg_primary"]} !important;
+    --st-secondary-background-color: {T["bg_input"]} !important;
+    --st-border-color: {T["border"]} !important;
+    --st-text-color: {T["text_primary"]} !important;
+    --st-primary-color: {T["accent"]} !important;
+}}
+
 /* ── Reset ──────────────────────────────────────────────────── */
 *, *::before, *::after {{ box-sizing: border-box; }}
 html, body, [class*="css"] {{
@@ -363,19 +371,21 @@ div[data-testid="metric-container"] [data-testid="stMetricDelta"] {{
 }}
 
 /* ── Inputs ─────────────────────────────────────────────────── */
-.stSelectbox [data-baseweb="select"] > div,
-.stMultiSelect [data-baseweb="select"] > div {{
+[data-testid="stSelectbox"] .react-aria-ComboBox:not(#ac-boost):not(#ac-boost2),
+[data-testid="stMultiSelect"] .react-aria-ComboBox:not(#ac-boost):not(#ac-boost2),
+[data-testid="stSelectbox"] [data-rac][role="group"]:not(#ac-boost):not(#ac-boost2),
+[data-testid="stMultiSelect"] [data-rac][role="group"]:not(#ac-boost):not(#ac-boost2) {{
     background-color: {T["bg_input"]} !important;
     border: 1px solid {T["border"]} !important;
     border-radius: 6px !important;
+}}
+[data-testid="stSelectbox"] .react-aria-ComboBox input,
+[data-testid="stMultiSelect"] .react-aria-ComboBox input,
+[data-testid="stSelectbox"] .react-aria-ComboBoxValue,
+[data-testid="stMultiSelect"] .react-aria-ComboBoxValue {{
+    background-color: transparent !important;
     color: {T["text_primary"]} !important;
     font-size: 12px !important;
-    transition: border-color 0.15s !important;
-}}
-.stSelectbox [data-baseweb="select"] > div:focus-within,
-.stMultiSelect [data-baseweb="select"] > div:focus-within {{
-    border-color: {T["accent"]} !important;
-    box-shadow: 0 0 0 2px {T["accent"]}25 !important;
 }}
 .stRadio [data-baseweb="radio"] {{
     gap: 6px !important;
@@ -384,6 +394,55 @@ div[data-testid="metric-container"] [data-testid="stMetricDelta"] {{
 .stRadio [data-testid="stWidgetLabel"] {{
     color: {T["text_secondary"]} !important;
     font-size: 11px !important;
+}}
+
+/* ── Dropdown list (react-aria Popover / ListBox / ListBoxItem) ── */
+.react-aria-Popover,
+div[role="listbox"] {{
+    background-color: {T["bg_card"]} !important;
+    border: 1px solid {T["border"]} !important;
+    border-radius: 6px !important;
+}}
+.react-aria-ListBox,
+[role="listbox"] {{
+    background-color: {T["bg_card"]} !important;
+}}
+.react-aria-ListBoxItem,
+[role="option"] {{
+    background-color: {T["bg_card"]} !important;
+    color: {T["text_primary"]} !important;
+    font-size: 12px !important;
+}}
+.react-aria-ListBoxItem[data-hovered],
+[role="option"][data-hovered],
+.react-aria-ListBoxItem[data-focused],
+[role="option"][data-focused] {{
+    background-color: {T["bg_input"]} !important;
+    color: {T["text_primary"]} !important;
+}}
+.react-aria-ListBoxItem[data-selected],
+[role="option"][aria-selected="true"] {{
+    background-color: {T["accent"]}20 !important;
+    color: {T["accent"]} !important;
+}}
+
+/* ── Multiselect tags/pills ─────────────────────────────────── */
+[data-testid="stMultiSelect"] *:has(> span[title]) {{
+    background-color: {T["accent"]} !important;
+    border-radius: 99px !important;
+    border: none !important;
+}}
+[data-testid="stMultiSelect"] span[title] {{
+    background-color: transparent !important;
+    color: #ffffff !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+}}
+[data-testid="stMultiSelect"] span[title] svg,
+[data-testid="stMultiSelect"] *:has(> span[title]) button,
+[data-testid="stMultiSelect"] *:has(> span[title]) svg {{
+    color: #ffffff !important;
+    fill: #ffffff !important;
 }}
 
 /* ── DataFrames ─────────────────────────────────────────────── */
@@ -485,13 +544,30 @@ hr {{
 }}
 
 /* ── Expander ───────────────────────────────────────────────── */
-.streamlit-expanderHeader {{
+.streamlit-expanderHeader,
+[data-testid="stExpander"] summary {{
     background-color: {T["bg_card"]} !important;
     border: 1px solid {T["border"]} !important;
     border-radius: 6px !important;
     color: {T["text_secondary"]} !important;
     font-size: 12px !important;
     font-weight: 500 !important;
+}}
+[data-testid="stExpander"] summary span,
+[data-testid="stExpander"] summary p,
+[data-testid="stExpander"] summary svg {{
+    color: {T["text_secondary"]} !important;
+    fill: {T["text_secondary"]} !important;
+}}
+[data-testid="stExpander"] details {{
+    background-color: {T["bg_primary"]} !important;
+    border: 1px solid {T["border"]} !important;
+    border-top: none !important;
+    border-radius: 0 0 6px 6px !important;
+}}
+[data-testid="stExpanderDetails"] {{
+    background-color: {T["bg_primary"]} !important;
+    color: {T["text_primary"]} !important;
 }}
 
 /* ── Text visibility (critical for light mode) ──────────── */
