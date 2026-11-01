@@ -1074,6 +1074,14 @@ def build_climate_context() -> str:
                 f"  {r['station_name']} ({r.get('state','?')}): "
                 f"{r['mean_temperature_c']:.1f}C"
             )
+            
+        bottom5 = s.nsmallest(5, "mean_temperature_c")
+        lines.append("Coldest stations:")
+        for _, r in bottom5.iterrows():
+            lines.append(
+                f"  {r['station_name']} ({r.get('state','?')}): "
+                f"{r['mean_temperature_c']:.1f}C"
+            )
 
     if "ml_anomaly_flag" in df.columns:
         n_anom = int(df["ml_anomaly_flag"].sum())
@@ -1226,15 +1234,17 @@ def build_station_context(station_name: str) -> str:
 
 def render_floating_assistant():
     """
-    Floating chat button pinned to the bottom-right of the screen.
-    Stays visible on every tab because it is rendered once, outside
-    the tab blocks, and pinned with position: fixed so scroll and
-    tab switching never move or hide it.
+    Floating chat button pinned to the bottom-right of the screen by
+    default, draggable by its header once open, and resizable between
+    a normal and expanded size. Stays visible on every tab because it
+    is rendered once, outside the tab blocks.
     """
     if "show_assistant" not in st.session_state:
         st.session_state.show_assistant = False
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
+    if "assistant_expanded" not in st.session_state:
+        st.session_state.assistant_expanded = False
 
     GEMINI_KEY    = os.environ.get("GEMINI_API_KEY", "").strip()
     ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -1245,7 +1255,15 @@ def render_floating_assistant():
     else:
         PROVIDER, PROVIDER_LABEL = None, ""
 
-    is_open = st.session_state.show_assistant
+    is_open     = st.session_state.show_assistant
+    is_expanded = st.session_state.assistant_expanded and is_open
+
+    if is_expanded:
+        panel_width = "560px"
+    elif is_open:
+        panel_width = "420px"
+    else:
+        panel_width = "60px"
 
     st.markdown(f"""
     <style>
@@ -1254,20 +1272,21 @@ def render_floating_assistant():
         bottom: 22px;
         right: 22px;
         z-index: 999999 !important;
-        width: {"380px" if is_open else "60px"} !important;
+        width: {panel_width} !important;
         background: {T['bg_card']} !important;
-        border-radius: {"14px" if is_open else "50%"} !important;
-        max-height: 80vh;
+        border-radius: {"14px" if is_open else "18px"} !important;
+        max-height: 85vh;
         overflow-y: {"visible" if is_open else "hidden"} !important;
+        transition: width 0.22s ease, border-radius 0.22s ease !important;
     }}
     .st-key-ac_float [data-testid="stVerticalBlockBorderWrapper"] {{
         background: {T['bg_card']} !important;
         border: 1px solid {T['border']} !important;
-        border-radius: {"14px" if is_open else "50%"} !important;
-        box-shadow: 0 8px 28px rgba(0,0,0,0.35) !important;
+        border-radius: {"14px" if is_open else "18px"} !important;
+        box-shadow: 0 10px 32px rgba(0,0,0,0.42) !important;
     }}
     .st-key-ac_float button {{
-        border-radius: {"6px" if is_open else "50%"} !important;
+        border-radius: {"6px" if is_open else "18px"} !important;
     }}
     .st-key-ac_msgbox {{
         overflow-y: auto !important;
@@ -1275,25 +1294,102 @@ def render_floating_assistant():
     @media (max-width: 480px) {{
         .st-key-ac_float {{ width: {"92vw" if is_open else "60px"} !important; }}
     }}
+    #ac-drag-handle {{
+        cursor: move;
+        user-select: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }}
+    #ac-drag-handle .ac-grip {{
+        opacity: 0.45;
+        font-size: 13px;
+        letter-spacing: 1px;
+    }}
+    .st-key-ac_float .stButton button {{
+        background: {T['bg_input'] if is_open else T['accent']} !important;
+        border: 1px solid {T['border'] if is_open else T['accent']} !important;
+        color: {T['text_secondary'] if is_open else "#ffffff"} !important;
+        font-size: {"13px" if is_open else "28px"} !important;
+        width: {"auto" if is_open else "62px"} !important;
+        height: {"auto" if is_open else "62px"} !important;
+        padding: {"7px 16px" if is_open else "0"} !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease !important;
+    }}
+    .st-key-ac_float .stButton button:hover {{
+        background: {T['accent']} !important;
+        color: #ffffff !important;
+        border-color: {T['accent']} !important;
+        transform: {"none" if is_open else "scale(1.06)"} !important;
+    }}
+        .st-key-ac_float .st-key-ac_close button,
+    .st-key-ac_float .st-key-ac_expand button {{
+        width: 32px !important;
+        height: 32px !important;
+        min-width: 32px !important;
+        min-height: 32px !important;
+        padding: 0 !important;
+        font-size: 14px !important;
+        border-radius: 8px !important;
+        background: {T['bg_input']} !important;
+        color: {T['text_secondary']} !important;
+    }}
+    .st-key-ac_float [data-testid="stChatInputSubmitButton"] {{
+        background: {T['bg_input']} !important;
+        color: {T['text_secondary']} !important;
+    }}
+    .st-key-ac_float [data-testid="stChatInput"] {{
+        background: {T['bg_input']} !important;
+        border: 1px solid {T['border']} !important;
+        border-radius: 10px !important;
+    }}
+    .st-key-ac_float [data-testid="stChatInput"] > div {{
+        background: transparent !important;
+    }}
+    [data-testid="stTooltipContent"] {{
+        background: {T['bg_input']} !important;
+        color: {T['text_primary']} !important;
+        border: 1px solid {T['border']} !important;
+    }}
+    .st-key-ac_float [data-testid="stChatInput"] textarea {{
+        background: transparent !important;
+        color: {T['text_primary']} !important;
+    }}
+    .st-key-ac_float [data-testid="stChatInput"] textarea::placeholder {{
+        color: {T['text_muted']} !important;
+    }}
     </style>
     """, unsafe_allow_html=True)
 
     with st.container(key="ac_float", border=True):
 
         if not is_open:
-            if st.button("💬", key="ac_open", help="Climate Assistant"):
+            if st.button("", key="ac_open", help="Climate Assistant",
+                          icon=":material/chat:"):
                 st.session_state.show_assistant = True
                 st.rerun()
 
         else:
-            top_l, top_r = st.columns([5, 1])
+            top_l, top_m, top_r = st.columns([4, 1, 1])
             with top_l:
                 st.markdown(
-                    f"**Climate Assistant** &nbsp;"
+                    f'<div id="ac-drag-handle">'
+                    f'<span class="ac-grip">⠿</span>'
+                    f'<strong>Climate Assistant</strong> &nbsp;'
                     f"<span style='font-size:10px;color:{T['text_muted']}'>"
-                    f"{PROVIDER_LABEL}</span>",
+                    f"{PROVIDER_LABEL}</span>"
+                    f'</div>',
                     unsafe_allow_html=True,
                 )
+            with top_m:
+                expand_label = "⤡" if is_expanded else "⤢"
+                if st.button(expand_label, key="ac_expand",
+                             help="Minimise" if is_expanded else "Expand"):
+                    st.session_state.assistant_expanded = not is_expanded
+                    st.rerun()
             with top_r:
                 if st.button("✕", key="ac_close"):
                     st.session_state.show_assistant = False
@@ -1306,6 +1402,13 @@ def render_floating_assistant():
 
                 @_fragment
                 def _chat_panel():
+
+                    def _next():
+                        try:
+                            st.rerun(scope="fragment")
+                        except Exception:
+                            st.rerun()
+
                     if not st.session_state.chat_history:
                         examples = [
                             "Which stations are anomalous?",
@@ -1321,9 +1424,10 @@ def render_floating_assistant():
                                     help=ex,
                                 ):
                                     st.session_state.ac_pending = ex
-                                    st.rerun()
+                                    _next()
 
-                    msg_box = st.container(height=260, key="ac_msgbox")
+                    box_height = 420 if is_expanded else 300
+                    msg_box = st.container(height=box_height, key="ac_msgbox")
                     with msg_box:
                         if not st.session_state.chat_history:
                             st.caption(
@@ -1335,17 +1439,28 @@ def render_floating_assistant():
                             with st.chat_message(m["role"]):
                                 st.markdown(m["content"])
 
+                        if st.session_state.get("ac_pending_question"):
+                            with st.chat_message("user"):
+                                st.markdown(st.session_state.ac_pending_question)
+                            with st.chat_message("assistant"):
+                                st.markdown("_Thinking..._")
+
                     user_input = st.chat_input("Ask a question...", key="ac_input")
                     if "ac_pending" in st.session_state:
                         user_input = st.session_state.pop("ac_pending")
 
-                    if user_input:
+                    if user_input and not st.session_state.get("ac_pending_question"):
+                        st.session_state.ac_pending_question = user_input
+                        _next()
+
+                    if st.session_state.get("ac_pending_question"):
+                        pending_q = st.session_state.pop("ac_pending_question")
                         st.session_state.chat_history.append(
-                            {"role": "user", "content": user_input}
+                            {"role": "user", "content": pending_q}
                         )
 
                         context = build_climate_context()
-                        station_hit = find_mentioned_station(user_input)
+                        station_hit = find_mentioned_station(pending_q)
                         if station_hit:
                             context += "\n\n" + build_station_context(station_hit)
 
@@ -1378,7 +1493,7 @@ def render_floating_assistant():
                                     for m in recent_history
                                 ]
                                 resp = client.messages.create(
-                                    model="claude-sonnet-4-6",
+                                    model="claude-sonnet-5",
                                     max_tokens=400,
                                     system=system,
                                     messages=messages,
@@ -1399,25 +1514,18 @@ def render_floating_assistant():
                                         "role": role, "parts": [m["content"]],
                                     })
                                 chat  = model.start_chat(history=history)
-                                reply = chat.send_message(user_input).text
+                                reply = chat.send_message(pending_q).text
                         except Exception as e:
                             reply = f"Error: {str(e)[:150]}"
 
                         st.session_state.chat_history.append(
                             {"role": "assistant", "content": reply}
                         )
-                        st.rerun()
+                        _next()
 
                 _chat_panel()
 
     # ── Neutralise ancestor transforms so position:fixed works ─────
-    # The button was already inside Streamlit's DOM, which is fine.
-    # The real bug is that some ancestor div has a CSS transform,
-    # filter, perspective, or contain property set, any of which
-    # creates a new "containing block" and makes position:fixed
-    # behave relative to that ancestor instead of the real viewport.
-    # We do NOT move the element (that breaks React's click handling)
-    # we just strip the offending property from every ancestor.
     st.components.v1.html("""
     <script>
     (function() {
@@ -1467,6 +1575,96 @@ def render_floating_assistant():
     })();
     </script>
     """, height=0)
+
+    # ── Drag by the header, and keep the panel on-screen ────────────
+    drag_script = """
+    <script>
+    (function() {
+        var IS_OPEN = __IS_OPEN__;
+
+        function resetOrClamp() {
+            try {
+                var doc = window.parent.document;
+                var panel = doc.querySelector('.st-key-ac_float');
+                if (!panel) return;
+                if (!IS_OPEN) {
+                    panel.style.left = '';
+                    panel.style.top = '';
+                    panel.style.right = '';
+                    panel.style.bottom = '';
+                    return;
+                }
+                if (panel.style.left) {
+                    var rect = panel.getBoundingClientRect();
+                    var maxLeft = Math.max(4, window.parent.innerWidth - rect.width - 4);
+                    var maxTop  = Math.max(4, window.parent.innerHeight - rect.height - 4);
+                    var curLeft = parseFloat(panel.style.left);
+                    var curTop  = parseFloat(panel.style.top);
+                    panel.style.left = Math.min(Math.max(curLeft, 4), maxLeft) + 'px';
+                    panel.style.top  = Math.min(Math.max(curTop, 4), maxTop) + 'px';
+                }
+            } catch (e) {}
+        }
+
+        function initDrag() {
+            try {
+                var doc = window.parent.document;
+                var handle = doc.querySelector('#ac-drag-handle');
+                var panel  = doc.querySelector('.st-key-ac_float');
+                if (!handle || !panel) return;
+                if (handle.dataset.dragBound === "1") return;
+                handle.dataset.dragBound = "1";
+
+                var dragging = false;
+                var startX, startY, startLeft, startTop;
+
+                handle.addEventListener('pointerdown', function(e) {
+                    dragging = true;
+                    var rect = panel.getBoundingClientRect();
+                    panel.style.left   = rect.left + 'px';
+                    panel.style.top    = rect.top + 'px';
+                    panel.style.right  = 'auto';
+                    panel.style.bottom = 'auto';
+                    startX = e.clientX;
+                    startY = e.clientY;
+                    startLeft = rect.left;
+                    startTop  = rect.top;
+                    e.preventDefault();
+                });
+
+                doc.addEventListener('pointermove', function(e) {
+                    if (!dragging) return;
+                    var dx = e.clientX - startX;
+                    var dy = e.clientY - startY;
+                    var rect = panel.getBoundingClientRect();
+                    var maxLeft = Math.max(4, window.parent.innerWidth - rect.width - 4);
+                    var maxTop  = Math.max(4, window.parent.innerHeight - rect.height - 4);
+                    var newLeft = Math.min(Math.max(startLeft + dx, 4), maxLeft);
+                    var newTop  = Math.min(Math.max(startTop + dy, 4), maxTop);
+                    panel.style.left = newLeft + 'px';
+                    panel.style.top  = newTop + 'px';
+                });
+
+                doc.addEventListener('pointerup', function() {
+                    dragging = false;
+                });
+            } catch (e) {}
+        }
+
+        resetOrClamp();
+        initDrag();
+        var attempts = 0;
+        var interval = setInterval(function () {
+            attempts++;
+            resetOrClamp();
+            initDrag();
+            if (attempts > 15) clearInterval(interval);
+        }, 300);
+    })();
+    </script>
+    """.replace("__IS_OPEN__", "true" if is_open else "false")
+
+    st.components.v1.html(drag_script, height=0)
     
     
 
