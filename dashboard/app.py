@@ -20,6 +20,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from config import (
     PROCESSED_DATA_PATH,
@@ -1708,6 +1709,25 @@ try:
     LOGO_B64 = load_logo_b64()
 except FileNotFoundError:
     LOGO_B64 = None
+    
+def data_freshness_caption():
+    """
+    Shows when the live data was last refreshed, in Sydney time, so a
+    visitor sees an honest timestamp instead of wondering whether the
+    numbers are stuck or broken.
+    """
+    newest = None
+    for path in (MERGED_DATA_PATH, STATION_SUMMARY_PATH, PROCESSED_DATA_PATH):
+        if os.path.exists(path):
+            mtime = os.path.getmtime(path)
+            if newest is None or mtime > newest:
+                newest = mtime
+    if newest is None:
+        st.caption("Data as of: unavailable")
+        return
+    dt_utc = datetime.fromtimestamp(newest, tz=ZoneInfo("UTC"))
+    dt_syd = dt_utc.astimezone(ZoneInfo("Australia/Sydney"))
+    st.caption(f"Data as of {dt_syd.strftime('%d %b %Y, %I:%M %p')} (Sydney time)")
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -1726,6 +1746,8 @@ with st.sidebar:
         </div>
     </div>
     """, unsafe_allow_html=True)
+    
+    data_freshness_caption()
 
     # Views navigation
     st.markdown('<p class="aus-section-label">Views</p>',
