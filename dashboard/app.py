@@ -34,6 +34,14 @@ from config import (
 
 from forecasting.hazard_index import compute_station_hazards
 
+# Streamlit fragments let one widget rerun on its own, instead of the
+# whole page. Older Streamlit versions do not have st.fragment, so this
+# falls back to a plain pass through decorator rather than crashing.
+_fragment = getattr(st, "fragment", None)
+if _fragment is None:
+    def _fragment(func):
+        return func
+
 try:
     _page_icon = Image.open(os.path.join(os.path.dirname(__file__), "assets", "logo.png"))
 except FileNotFoundError:
@@ -1030,6 +1038,7 @@ def map_layout(fig,
 
     return fig
 
+@st.cache_data(ttl=120)
 def build_climate_context() -> str:
     """
     Summarise the live pipeline data as text so the assistant's
@@ -1106,6 +1115,111 @@ def build_climate_context() -> str:
             lines.append(f"  {cl}: {cnt} stations")
 
     lines.append("=== END ===")
+    return "\n".join(lines)
+
+def find_mentioned_station(text: str):
+    """
+    Looks for a live station name inside the user's message so the
+    assistant can answer questions about one specific station instead
+    of only ever seeing national aggregates.
+    """
+    if not text or "station_name" not in df.columns:
+        return None
+    text_low = text.lower()
+    names = df["station_name"].dropna().unique().tolist()
+    for name in sorted(names, key=len, reverse=True):
+        if isinstance(name, str) and name.lower() in text_low:
+            return name
+    return None
+
+def build_station_context(station_name: str) -> str:
+    """
+    Builds a focused data block for one station, pulled straight from
+    the live reading, the station summary, clustering and hazard
+    forecast, so the assistant can give a real summary for a named
+    station instead of only the national top five.
+    """
+    lines = [f"=== STATION FOCUS: {station_name} ==="]
+
+    if "station_name" in df.columns:
+        live = df[df["station_name"] == station_name]
+        if not live.empty:
+            row = live.iloc[-1]
+            if "state" in row.index and pd.notna(row.get("state")):
+                lines.append(f"State: {row['state']}")
+            if "temperature_c" in row.index and pd.notna(row.get("temperature_c")):
+                lines.append(f"Current temperature: {float(row['temperature_c']):.1f}C")
+            if "humidity_percent" in row.index and pd.notna(row.get("humidity_percent")):
+                lines.append(f"Humidity: {float(row['humidity_percent']):.0f}%")
+            if "wind_speed_kmh" in row.index and pd.notna(row.get("wind_speed_kmh")):
+                lines.append(f"Wind speed: {float(row['wind_speed_kmh']):.0f} km/h")
+            if "rainfall_mm" in row.index and pd.notna(row.get("rainfall_mm")):
+                lines.append(f"Rainfall: {float(row['rainfall_mm']):.1f} mm")
+            if "barra2_temp_c" in row.index and pd.notna(row.get("barra2_temp_c")) \
+                    and pd.notna(row.get("temperature_c")):
+                lines.append(
+                    f"Current vs BARRA2 2022 baseline: "
+                    f"{float(row['temperature_c']) - float(row['barra2_temp_c']):+.1f}C"
+                )
+            if "ml_anomaly_flag" in row.index:
+                flagged = bool(row["ml_anomaly_flag"])
+                lines.append(f"Anomaly flagged right now: {'yes' if flagged else 'no'}")
+                if flagged and "ml_primary_driver" in row.index \
+                        and pd.notna(row.get("ml_primary_driver")) and row["ml_primary_driver"]:
+                    lines.append(f"Primary anomaly driver: {row['ml_primary_driver']}")
+            if "ensemble_anomaly" in row.index and pd.notna(row.get("ensemble_anomaly")):
+                lines.append(
+                    f"High confidence ensemble anomaly: "
+                    f"{'yes' if bool(row['ensemble_anomaly']) else 'no'}"
+                )
+
+    if not summary.empty and "station_name" in summary.columns:
+        srow = summary[summary["station_name"] == station_name]
+        if not srow.empty:
+            s = srow.iloc[0]
+            if "mean_temperature_c" in s.index and pd.notna(s.get("mean_temperature_c")):
+                lines.append(f"Average temperature on record: {float(s['mean_temperature_c']):.1f}C")
+            if "vulnerability_index" in s.index and pd.notna(s.get("vulnerability_index")):
+                lines.append(f"Vulnerability index: {float(s['vulnerability_index']):.0f} out of 100")
+            if "population" in s.index and pd.notna(s.get("population")):
+                lines.append(f"Nearby population (ABS): {int(s['population']):,}")
+            if "seifa_score" in s.index and pd.notna(s.get("seifa_score")):
+                lines.append(
+                    f"Area SEIFA disadvantage score: {float(s['seifa_score']):.0f} "
+                    f"(1000 = national average, lower means more disadvantaged)"
+                )
+            if "population_risk_category" in s.index and pd.notna(s.get("population_risk_category")):
+                lines.append(f"Population risk category: {s['population_risk_category']}")
+
+    if not df_clusters.empty and "station_name" in df_clusters.columns \
+            and "cluster_label" in df_clusters.columns:
+        crow = df_clusters[df_clusters["station_name"] == station_name]
+        if not crow.empty:
+            lines.append(f"Climate cluster: {crow.iloc[0]['cluster_label']}")
+
+    try:
+        hazards = get_station_hazards(station_name, df_bom_history, load_forecast_data())
+        if hazards.get("available"):
+            ffdi_hourly = hazards.get("ffdi_hourly")
+            if ffdi_hourly is not None and not ffdi_hourly.empty:
+                peak_fire = ffdi_hourly.loc[ffdi_hourly["ffdi"].idxmax()]
+                lines.append(f"Bushfire danger (forecast peak): {peak_fire['ffdi_rating']}")
+            if hazards.get("rainfall_forecast_available"):
+                flood_hourly = hazards.get("flood_hourly")
+                if flood_hourly is not None and not flood_hourly.empty:
+                    peak_flood = flood_hourly.loc[flood_hourly["flood_score"].idxmax()]
+                    lines.append(f"Flash flood risk (forecast peak): {peak_flood['flood_rating']}")
+            if "ehf_rating" in hazards:
+                lines.append(f"Heatwave outlook: {hazards['ehf_rating']}")
+        elif hazards.get("reason"):
+            lines.append(f"Hazard forecast note: {hazards['reason']}")
+    except Exception:
+        pass
+
+    if len(lines) == 1:
+        lines.append("No further live data found yet for this station.")
+
+    lines.append("=== END STATION FOCUS ===")
     return "\n".join(lines)
 
 
@@ -1188,92 +1302,112 @@ def render_floating_assistant():
                 st.warning("No API key configured.", icon="⚠️")
                 st.caption("Add GEMINI_API_KEY to your .env file.")
             else:
-                if not st.session_state.chat_history:
-                    examples = [
-                        "Which stations are anomalous?",
-                        "What's the hottest state right now?",
-                        "Any compound heat events?",
-                    ]
-                    ex_cols = st.columns(3)
-                    for i, ex in enumerate(examples):
-                        with ex_cols[i]:
-                            if st.button(
-                                ex, key=f"ac_ex_{i}",
-                                use_container_width=True,
-                                help=ex,
-                            ):
-                                st.session_state.ac_pending = ex
-                                st.rerun()
 
-                msg_box = st.container(height=260, key="ac_msgbox")
-                with msg_box:
+                @_fragment
+                def _chat_panel():
                     if not st.session_state.chat_history:
-                        st.caption(
-                            "Ask about live stations, anomalies, "
-                            "or current conditions."
+                        examples = [
+                            "Which stations are anomalous?",
+                            "What's the hottest state right now?",
+                            "Summarise Sydney Airport",
+                        ]
+                        ex_cols = st.columns(3)
+                        for i, ex in enumerate(examples):
+                            with ex_cols[i]:
+                                if st.button(
+                                    ex, key=f"ac_ex_{i}",
+                                    use_container_width=True,
+                                    help=ex,
+                                ):
+                                    st.session_state.ac_pending = ex
+                                    st.rerun()
+
+                    msg_box = st.container(height=260, key="ac_msgbox")
+                    with msg_box:
+                        if not st.session_state.chat_history:
+                            st.caption(
+                                "Ask about live stations, anomalies, or "
+                                "current conditions. Name a station for "
+                                "a summary of just that station."
+                            )
+                        for m in st.session_state.chat_history:
+                            with st.chat_message(m["role"]):
+                                st.markdown(m["content"])
+
+                    user_input = st.chat_input("Ask a question...", key="ac_input")
+                    if "ac_pending" in st.session_state:
+                        user_input = st.session_state.pop("ac_pending")
+
+                    if user_input:
+                        st.session_state.chat_history.append(
+                            {"role": "user", "content": user_input}
                         )
-                    for m in st.session_state.chat_history:
-                        with st.chat_message(m["role"]):
-                            st.markdown(m["content"])
 
-                user_input = st.chat_input("Ask a question...", key="ac_input")
-                if "ac_pending" in st.session_state:
-                    user_input = st.session_state.pop("ac_pending")
+                        context = build_climate_context()
+                        station_hit = find_mentioned_station(user_input)
+                        if station_hit:
+                            context += "\n\n" + build_station_context(station_hit)
 
-                if user_input:
-                    st.session_state.chat_history.append(
-                        {"role": "user", "content": user_input}
-                    )
-                    system = (
-                        "You are AusClimate Assistant, built into a "
-                        "real-time Australian climate platform used by "
-                        "councils, emergency services, and agencies.\n"
-                        "Answer only from the data below. Be concise, "
-                        "plain language, no em dashes, no markdown "
-                        "headers, under 150 words unless asked for "
-                        "more detail.\n\n" + build_climate_context()
-                    )
-                    reply = ""
-                    try:
-                        if PROVIDER == "anthropic":
-                            import anthropic
-                            client = anthropic.Anthropic(
-                                api_key=ANTHROPIC_KEY
-                            )
-                            messages = [
-                                {"role": m["role"], "content": m["content"]}
-                                for m in st.session_state.chat_history
-                            ]
-                            resp = client.messages.create(
-                                model="claude-sonnet-4-6",
-                                max_tokens=500,
-                                system=system,
-                                messages=messages,
-                            )
-                            reply = resp.content[0].text
-                        else:
-                            import google.generativeai as genai
-                            genai.configure(api_key=GEMINI_KEY)
-                            model = genai.GenerativeModel(
-                                model_name="gemini-3.6-flash",
-                                system_instruction=system,
-                            )
-                            history = []
-                            for m in st.session_state.chat_history[:-1]:
-                                role = "model" if m["role"] == "assistant" \
-                                    else "user"
-                                history.append({
-                                    "role": role, "parts": [m["content"]],
-                                })
-                            chat  = model.start_chat(history=history)
-                            reply = chat.send_message(user_input).text
-                    except Exception as e:
-                        reply = f"Error: {str(e)[:150]}"
+                        system = (
+                            "You are AusClimate Assistant, built into a "
+                            "real-time Australian climate platform used by "
+                            "councils, emergency services, and agencies.\n"
+                            "Answer only from the data below. If a STATION "
+                            "FOCUS block is included, answer station "
+                            "specific questions from that block directly "
+                            "rather than the national figures. Be concise, "
+                            "plain language, no em dashes, no markdown "
+                            "headers, under 150 words unless asked for "
+                            "more detail.\n\n" + context
+                        )
 
-                    st.session_state.chat_history.append(
-                        {"role": "assistant", "content": reply}
-                    )
-                    st.rerun()
+                        recent_history = st.session_state.chat_history[-8:]
+                        if recent_history and recent_history[0]["role"] != "user":
+                            recent_history = recent_history[1:]
+
+                        reply = ""
+                        try:
+                            if PROVIDER == "anthropic":
+                                import anthropic
+                                client = anthropic.Anthropic(
+                                    api_key=ANTHROPIC_KEY
+                                )
+                                messages = [
+                                    {"role": m["role"], "content": m["content"]}
+                                    for m in recent_history
+                                ]
+                                resp = client.messages.create(
+                                    model="claude-sonnet-4-6",
+                                    max_tokens=400,
+                                    system=system,
+                                    messages=messages,
+                                )
+                                reply = resp.content[0].text
+                            else:
+                                import google.generativeai as genai
+                                genai.configure(api_key=GEMINI_KEY)
+                                model = genai.GenerativeModel(
+                                    model_name="gemini-3.6-flash",
+                                    system_instruction=system,
+                                )
+                                history = []
+                                for m in recent_history[:-1]:
+                                    role = "model" if m["role"] == "assistant" \
+                                        else "user"
+                                    history.append({
+                                        "role": role, "parts": [m["content"]],
+                                    })
+                                chat  = model.start_chat(history=history)
+                                reply = chat.send_message(user_input).text
+                        except Exception as e:
+                            reply = f"Error: {str(e)[:150]}"
+
+                        st.session_state.chat_history.append(
+                            {"role": "assistant", "content": reply}
+                        )
+                        st.rerun()
+
+                _chat_panel()
 
     # ── Neutralise ancestor transforms so position:fixed works ─────
     # The button was already inside Streamlit's DOM, which is fine.
@@ -1408,6 +1542,14 @@ def load_bom_history():
             return pd.DataFrame()
     return pd.DataFrame()
 
+@st.cache_data(ttl=1800)
+def load_forecast_data():
+    if os.path.exists(FORECAST_OUTPUT_PATH):
+        try:
+            return pd.read_parquet(FORECAST_OUTPUT_PATH)
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()
 
 @st.cache_data(ttl=1800)
 def get_station_hazards(station_name: str, _history_all: pd.DataFrame,
