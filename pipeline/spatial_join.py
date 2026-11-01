@@ -31,7 +31,7 @@ def merge_bom_barra2(df_bom: pd.DataFrame,
         return df_bom
 
     if df_barra2.empty:
-        print("No BARRA2 data — returning BOM data without historical context.")
+        print("No BARRA2 data - returning BOM data without historical context.")
         return df_bom
 
     # BARRA2 is already one row per station

@@ -4,7 +4,7 @@ BARRA2 ingestion module.
 BARRA-R2 is BOM's own high-resolution atmospheric reanalysis for Australia.
 Coverage: 1979 to present, updated monthly, 3-4 months behind present day.
 Resolution: 12km horizontal (AUS-11 grid), 1-hourly data.
-Access: NCI THREDDS public server — no login required.
+Access: NCI THREDDS public server - no login required.
 Licence: Creative Commons Attribution 4.0 (CC-BY 4.0)
 
 Confirmed URL format from github.com/akarich73/barra2-dl:
@@ -246,7 +246,7 @@ def _cache_is_valid() -> bool:
         # At least one variable must have real values
         has_data = df[barra2_data_cols].notna().any().any()
         if not has_data:
-            print("  BARRA2 cache exists but contains only NaN — will re-fetch.")
+            print("  BARRA2 cache exists but contains only NaN - will re-fetch.")
         return has_data
     except Exception:
         return False
@@ -263,12 +263,12 @@ def _save_cache(df: pd.DataFrame) -> None:
     ]
 
     if not barra2_data_cols:
-        print("  BARRA2: no data columns to cache — skipping.")
+        print("  BARRA2: no data columns to cache - skipping.")
         return
 
     has_data = df[barra2_data_cols].notna().any().any()
     if not has_data:
-        print("  BARRA2: all values are NaN — not caching empty result.")
+        print("  BARRA2: all values are NaN - not caching empty result.")
         print("  This means THREDDS returned no data for any variable.")
         print("  Pipeline will continue with BOM data only.")
         return
@@ -312,7 +312,7 @@ def _fetch_variable_grid(variable: str, year: int,
     # Sanity check: NetCDF files start with 'CDF' magic bytes
     if len(r.content) < 500:
         raise ValueError(
-            f"Response too small ({len(r.content)} bytes) — "
+            f"Response too small ({len(r.content)} bytes) - "
             f"likely an error page not a NetCDF file."
         )
 
@@ -435,7 +435,7 @@ def fetch_barra2_all_stations(station_coords: dict,
 
     # ── Check cache ───────────────────────────────────────────────
     if not force_refresh and _cache_is_valid():
-        print("BARRA2 cache is fresh — loading from cache.")
+        print("BARRA2 cache is fresh - loading from cache.")
         df = _load_cache()
         if not df.empty:
             return df
@@ -554,7 +554,7 @@ def fetch_barra2_all_stations(station_coords: dict,
 
             except requests.exceptions.Timeout:
                 print(f"    Timeout for {var_name} "
-                      f"({try_year}-{try_month:02d}) — skipping.")
+                      f"({try_year}-{try_month:02d}) = skipping.")
                 break
 
             except ValueError as e:
@@ -566,7 +566,7 @@ def fetch_barra2_all_stations(station_coords: dict,
                 break
 
         if not fetched:
-            print(f"    {desc}: no data found — column set to NaN.")
+            print(f"    {desc}: no data found - column set to NaN.")
             fail_count += 1
 
     # ── Save cache ────────────────────────────────────────────────

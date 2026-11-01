@@ -120,7 +120,7 @@ def run_pipeline(force_refresh: bool = False,
     # Phase 2: Score every observation, assign severity,
     #          identify primary driver variable per anomaly
     # Phase 3 (future): SHAP attribution
-    print("\n[4b/6] ML Anomaly Detection — Isolation Forest")
+    print("\n[4b/6] ML Anomaly Detection - Isolation Forest")
     print("-" * 40)
 
     try:
@@ -349,9 +349,9 @@ if __name__ == "__main__":
     force_retrain = "--retrain" in sys.argv
 
     if force_refresh:
-        print("Force refresh mode — all caches will be ignored.")
+        print("Force refresh mode - all caches will be ignored.")
     if force_retrain:
-        print("Force retrain mode — ML model will be rebuilt.")
+        print("Force retrain mode - ML model will be rebuilt.")
 
     run_pipeline(
         force_refresh=force_refresh,

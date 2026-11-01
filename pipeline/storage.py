@@ -6,14 +6,27 @@ Parquet is 3-5x smaller than CSV and reads faster for column queries.
 
 import pandas as pd
 import os
+import tempfile
 
 
 def save_parquet(df: pd.DataFrame, path: str) -> None:
     if df.empty:
-        print(f"  Nothing to save at {path} — DataFrame is empty.")
+        print(f"  Nothing to save at {path} -- DataFrame is empty.")
         return
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    df.to_parquet(path, index=False)
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    # Write to a temp file in the same folder, then rename it over the
+    # real file. The rename is atomic, so a reader never sees a half
+    # written file, and a crash mid write never corrupts the real one.
+    fd, tmp_path = tempfile.mkstemp(suffix=".parquet", dir=folder)
+    os.close(fd)
+    try:
+        df.to_parquet(tmp_path, index=False)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
     size_kb = os.path.getsize(path) / 1024
     print(f"  Saved: {path} ({len(df)} rows, {size_kb:.1f} KB)")
 
@@ -39,12 +52,14 @@ def append_parquet(new_df: pd.DataFrame, path: str,
         save_parquet(new_df, path)
     else:
         combined = pd.concat([existing, new_df], ignore_index=True)
-        # Keep only the most recent max_rows records
         combined = combined.tail(max_rows)
         save_parquet(combined, path)
-        
+
+
 def append_to_history(latest_df: pd.DataFrame, history_path: str):
     """Append the latest BOM snapshot to a rolling 90-day history file."""
+    if latest_df.empty:
+        return
 
     if os.path.exists(history_path):
         try:
@@ -60,4 +75,4 @@ def append_to_history(latest_df: pd.DataFrame, history_path: str):
     cutoff = pd.Timestamp.now() - pd.Timedelta(days=90)
     combined = combined[combined["timestamp"] >= cutoff]
 
-    combined.to_parquet(history_path, index=False)
+    save_parquet(combined, history_path)

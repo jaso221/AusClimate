@@ -227,7 +227,6 @@ venv/
 
 # Data files
 data/raw/
-data/processed/
 *.parquet
 *.csv
 *.nc

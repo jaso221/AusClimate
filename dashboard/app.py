@@ -1,7 +1,7 @@
 """
-AusClimate Dashboard -- dashboard/app.py
+AusClimate Dashboard - dashboard/app.py
 Real-Time Australian Climate Analytics Platform
-University of Technology Sydney -- Capstone 2026
+University of Technology Sydney - Capstone 2026
 """
 
 import sys
@@ -155,7 +155,7 @@ if "stakeholder_mode" not in st.session_state:
 
 MODE = st.session_state.stakeholder_mode
 
-# Legacy variable names -- keep all existing chart code working unchanged
+# Legacy variable names - keep all existing chart code working unchanged
 PLOT_BG           = T["plot_bg"]
 PAPER_BG          = T["paper_bg"]
 COLOUR_SCALE      = "RdYlBu_r"
@@ -194,7 +194,7 @@ html, body, [class*="css"] {{
 }}
 #MainMenu, footer {{ visibility: hidden; }}
 header {{ visibility: hidden; }}
-/* No collapse control at all -- sidebar always visible, nothing to break */
+/* No collapse control at all - sidebar always visible, nothing to break */
 [data-testid="stSidebarCollapseButton"],
 [data-testid*="CollapsedControl" i],
 [data-testid*="SidebarCollapse" i] {{
@@ -313,7 +313,7 @@ div[data-testid="metric-container"] [data-testid="stMetricDelta"] {{
     border-radius: 0 0 8px 8px !important;
     padding: 24px 20px !important;
 }}
-/* ── Sticky tabs -- stay visible while scrolling ────────── */
+/* ── Sticky tabs - stay visible while scrolling ────────── */
 .stTabs [data-baseweb="tab-list"] {{
     position: sticky !important;
     top: 0px !important;
@@ -983,7 +983,7 @@ def map_layout(fig,
                legend: bool = False) -> object:
     """
     Apply consistent full-width Australia map layout.
-    Uses open-street-map tiles -- free, no API key, no watermark.
+    Uses open-street-map tiles - free, no API key, no watermark.
     Fills the full container width and shows proper map detail.
     """
     is_dark = (
@@ -1282,7 +1282,7 @@ def render_floating_assistant():
     # creates a new "containing block" and makes position:fixed
     # behave relative to that ancestor instead of the real viewport.
     # We do NOT move the element (that breaks React's click handling)
-    # -- we just strip the offending property from every ancestor.
+    # we just strip the offending property from every ancestor.
     st.components.v1.html("""
     <script>
     (function() {
@@ -1826,7 +1826,7 @@ if MODE != "all":
         <div style="font-size:10px; font-weight:700;
                     text-transform:uppercase; letter-spacing:0.1em;
                     color:{T['text_muted']}; margin-bottom:6px;">
-            {MODE_INFO['icon']} {MODE_INFO['label']} -- Recommended View
+            {MODE_INFO['icon']} {MODE_INFO['label']} - Recommended View
         </div>
         <div style="font-size:12px; color:{T['text_secondary']};">
             Your primary tab is
@@ -2443,7 +2443,7 @@ if selected_view == "Anomalies":
 
         if ml_available:
             st.success(
-                "Isolation Forest active -- "
+                "Isolation Forest active - "
                 "anomalies detected across 5 climate variables."
             )
 
@@ -2572,7 +2572,7 @@ if selected_view == "Anomalies":
                     )
                     map_layout(
                         fig_risk, T,
-                        title="Station Risk Map -- "
+                        title="Station Risk Map - "
                               "dot size = anomaly count",
                         height=560, legend=True,
                     )
@@ -2707,7 +2707,7 @@ if selected_view == "Anomalies":
     # SUB-TAB 2 -- SHAP EXPLAINABILITY
     # ─────────────────────────────────────────────────────────────
     with anom_sub2:
-        st.subheader("SHAP Explainability -- Phase 3")
+        st.subheader("SHAP Explainability - Phase 3")
         st.caption(
             "Shapley values show exactly how much each climate variable "
             "contributed to each anomaly score. Values are additive and "
@@ -2725,7 +2725,7 @@ if selected_view == "Anomalies":
         if not shap_available:
             st.info(
                 "SHAP Phase 3 not yet computed. "
-                "Run: python main.py --retrain"
+                "Run: python main.py -retrain"
             )
             if ml_available:
                 st.markdown("""
@@ -2742,7 +2742,7 @@ if selected_view == "Anomalies":
             if not df_shap_global.empty:
                 st.subheader("Global Feature Importance")
                 st.caption(
-                    "Mean absolute SHAP value across all anomalies -- "
+                    "Mean absolute SHAP value across all anomalies - "
                     "shows which variables drive anomalies nationally."
                 )
                 fig_gi = px.bar(
@@ -2766,7 +2766,7 @@ if selected_view == "Anomalies":
             # Beeswarm scatter
             if shap_feat_cols and "ml_anomaly_flag" in df.columns:
                 st.divider()
-                st.subheader("SHAP Distribution -- All Anomalies")
+                st.subheader("SHAP Distribution - All Anomalies")
                 st.caption(
                     "Each dot is one anomalous observation. "
                     "Left of zero = pushed toward anomalous. "
@@ -2911,7 +2911,7 @@ if selected_view == "Anomalies":
                                          opacity=0.5)
                         chart_layout(
                             fig_wf,
-                            title=f"SHAP Waterfall -- {sel_stn} "
+                            title=f"SHAP Waterfall - {sel_stn} "
                                   f"(score: {score:.4f})",
                             height=400,
                         )
@@ -2927,7 +2927,7 @@ if selected_view == "Anomalies":
             else:
                 st.info(
                     "No SHAP-computed anomalies found. "
-                    "Run: python main.py --retrain"
+                    "Run: python main.py -retrain"
                 )
 
             # SHAP explanation table
@@ -2986,7 +2986,7 @@ if selected_view == "Anomalies":
         if not lof_available:
             st.info(
                 "LOF and Ensemble results not yet available. "
-                "Run: python main.py --retrain"
+                "Run: python main.py -retrain"
             )
             st.markdown("""
             **What LOF adds:**
@@ -3136,7 +3136,7 @@ if selected_view == "Anomalies":
                         )
                         map_layout(
                             fig_ens_map, T,
-                            title="Ensemble Anomalies -- "
+                            title="Ensemble Anomalies - "
                                   "dot size = count, colour = IF score",
                             height=520,
                         )
@@ -3282,7 +3282,7 @@ if selected_view == "BARRA2 Comparison":
             fig_comp.update_layout(barmode="group")
             chart_layout(
                 fig_comp,
-                title=f"BOM Current vs BARRA2 Historical -- {sel_pair}",
+                title=f"BOM Current vs BARRA2 Historical - {sel_pair}",
                 height=460, xangle=-45, legend=True,
                 margin=dict(t=50, b=60, l=44, r=16),
             )
@@ -3304,7 +3304,7 @@ if selected_view == "BARRA2 Comparison":
             fig_diff.add_hline(y=0, line_color=T["border"], opacity=0.4)
             chart_layout(
                 fig_diff,
-                title=f"Difference: BOM minus BARRA2 Historical -- {sel_pair}",
+                title=f"Difference: BOM minus BARRA2 Historical - {sel_pair}",
                 height=360, xangle=-45,
             )
             st.plotly_chart(fig_diff, use_container_width=True)
@@ -3715,7 +3715,7 @@ if selected_view == "Clustering":
             )
             map_layout(
                 fig_cl_map, T,
-                title=f"Australian Climate Clusters -- "
+                title=f"Australian Climate Clusters - "
                       f"{n_clusters_found} profiles from "
                       f"{n_stations_cl:,} stations",
                 height=580,
@@ -4175,7 +4175,7 @@ if selected_view == "Population Risk":
             )
             map_layout(
                 fig_map, T,
-                title="Population Exposure Map -- "
+                title="Population Exposure Map - "
                       "dot size = people nearby",
                 height=600,
             )
@@ -4404,22 +4404,22 @@ if selected_view == "Population Risk":
                 <b style="color:{T['text_primary']};">
                     Population Score (0-100)
                 </b>
-                -- normalised count of people living in the nearest
+                - normalised count of people living in the nearest
                 SA2 region. 100 = largest population. 0 = smallest.<br>
                 <b style="color:{T['text_primary']};">
                     SEIFA Score
                 </b>
-                -- national average is 1000. Below 1000 = more
+                - national average is 1000. Below 1000 = more
                 disadvantaged. Above 1000 = less disadvantaged.<br>
                 <b style="color:{T['text_primary']};">
                     Population Risk Score (0-100)
                 </b>
-                -- 60% climate vulnerability index + 40% population
+                - 60% climate vulnerability index + 40% population
                 exposure. Higher = more urgent action needed.<br>
                 <b style="color:{T['text_primary']};">
                     Sources
                 </b>
-                -- ABS Estimated Resident Population 2022 by SA2 |
+                - ABS Estimated Resident Population 2022 by SA2 |
                 ABS SEIFA 2021 IRSD | data.api.abs.gov.au | CC-BY 4.0
             </div>
         </div>
@@ -4508,7 +4508,7 @@ if selected_view == "Forecast":
                     name="80% confidence interval",
                 ))
 
-                fig = chart_layout(fig, title=f"{fc_station} -- {fc_variable.replace('_',' ').title()}",
+                fig = chart_layout(fig, title=f"{fc_station} - {fc_variable.replace('_',' ').title()}",
                                    height=420, legend=True)
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -4544,7 +4544,7 @@ if selected_view == "Forecast":
                 )
                 h3.metric(
                     "Soil Dryness (KBDI)", f"{hazards['today_kbdi']:.0f} / 203",
-                    help="Keetch-Byram Drought Index -- a longer-running "
+                    help="Keetch-Byram Drought Index - a longer-running "
                          "0-203 soil moisture scale. 0 means recently "
                          "soaked, 203 is as dry as the scale goes. The "
                          "dryness score above is partly built from this."
@@ -4575,7 +4575,7 @@ if selected_view == "Forecast":
                     mode="lines+markers", name="Fire Danger Index",
                     line=dict(color=T["critical"]),
                 ))
-                fig = chart_layout(fig, title=f"{fc_station} -- Fire Danger Forecast",
+                fig = chart_layout(fig, title=f"{fc_station} - Fire Danger Forecast",
                                    height=360, legend=False)
                 fig.update_yaxes(title_text="Fire Danger Index", rangemode="tozero")
                 st.plotly_chart(fig, use_container_width=True)
@@ -4596,13 +4596,13 @@ if selected_view == "Forecast":
 
                 with st.expander("What do these terms mean?"):
                     st.markdown(
-                        "- **Fire Danger Index (FFDI)** -- the official "
+                        "- **Fire Danger Index (FFDI)** - the official "
                         "Australian fire danger score. Combines heat, "
                         "humidity, wind and dryness into one number.\n"
-                        "- **Dryness Score / Drought Factor** -- a 0-10 "
+                        "- **Dryness Score / Drought Factor** - a 0-10 "
                         "score for how primed the vegetation is to burn, "
                         "based on recent rainfall and heat.\n"
-                        "- **KBDI** -- Keetch-Byram Drought Index, a "
+                        "- **KBDI** - Keetch-Byram Drought Index, a "
                         "longer-term 0-203 soil moisture scale that the "
                         "dryness score is partly built from.\n\n"
                         "**Rating bands**, in increasing order of danger: "
@@ -4653,7 +4653,7 @@ if selected_view == "Forecast":
                     x=flood_hourly["forecast_datetime"], y=flood_hourly["rainfall_mm"],
                     name="Forecast rainfall (mm)", marker_color=T["accent"],
                 ))
-                fig = chart_layout(fig, title=f"{fc_station} -- Forecast Rainfall",
+                fig = chart_layout(fig, title=f"{fc_station} - Forecast Rainfall",
                                    height=300, legend=False)
                 fig.update_yaxes(title_text="Rainfall (mm)")
                 st.plotly_chart(fig, use_container_width=True)
@@ -4667,7 +4667,7 @@ if selected_view == "Forecast":
                     mode="lines+markers", name="Risk Score",
                     line=dict(color=T["accent_light"]),
                 ))
-                fig2 = chart_layout(fig2, title=f"{fc_station} -- Flash Flood Risk Score",
+                fig2 = chart_layout(fig2, title=f"{fc_station} - Flash Flood Risk Score",
                                     height=300, legend=False)
                 fig2.update_yaxes(title_text="Risk Score (0-10)", range=[0, 10])
                 st.plotly_chart(fig2, use_container_width=True)
@@ -4685,7 +4685,7 @@ if selected_view == "Forecast":
 
                 with st.expander("What do these terms mean?"):
                     st.markdown(
-                        "- **Risk Score** -- a 0-10 indicative score, not an "
+                        "- **Risk Score** - a 0-10 indicative score, not an "
                         "official flood warning. Built from how much rain is "
                         "forecast and how saturated the ground already is.\n"
                         "- Real flood forecasting needs catchment and "
@@ -4738,7 +4738,7 @@ if selected_view == "Forecast":
                           [hazards["t30_avg"], hazards["forecast_temp_mean"], hazards["t95"]]],
                     textposition="outside",
                 ))
-                comp_fig = chart_layout(comp_fig, title=f"{fc_station} -- Forecast vs Normal vs Extreme",
+                comp_fig = chart_layout(comp_fig, title=f"{fc_station} - Forecast vs Normal vs Extreme",
                                         height=320, legend=False)
                 comp_fig.update_yaxes(title_text="Temperature (C)")
                 st.plotly_chart(comp_fig, use_container_width=True)
@@ -4754,20 +4754,20 @@ if selected_view == "Forecast":
                                     annotation_text="Extreme threshold", annotation_position="top left")
                 trend_fig.add_hline(y=hazards["forecast_temp_mean"], line_dash="dot", line_color=T["warning"],
                                     annotation_text="Forecast avg", annotation_position="bottom left")
-                trend_fig = chart_layout(trend_fig, title=f"{fc_station} -- Recent Daily Temperatures",
+                trend_fig = chart_layout(trend_fig, title=f"{fc_station} - Recent Daily Temperatures",
                                          height=320, legend=False)
                 trend_fig.update_yaxes(title_text="Temperature (C)")
                 st.plotly_chart(trend_fig, use_container_width=True)
 
                 with st.expander("What do these ratings mean?"):
                     st.markdown(
-                        "- **No Heatwave** -- forecast is within the normal "
+                        "- **No Heatwave** - forecast is within the normal "
                         "range for this station.\n"
-                        "- **Low-Intensity Heatwave** -- unusually warm; "
+                        "- **Low-Intensity Heatwave** - unusually warm; "
                         "minor risk, mainly for vulnerable groups.\n"
-                        "- **Severe Heatwave** -- significantly hotter than "
+                        "- **Severe Heatwave** - significantly hotter than "
                         "normal; health risk increases for most people.\n"
-                        "- **Extreme Heatwave** -- rare, dangerous heat for "
+                        "- **Extreme Heatwave** - rare, dangerous heat for "
                         "this location; precautions recommended for "
                         "everyone.\n\n"
                         "Adapted from the Excess Heat Factor (EHF), the "
@@ -4785,7 +4785,7 @@ with cl:
         "Data: Bureau of Meteorology Live JSON API | "
         "BARRA2 NCI THREDDS (BOM) | "
         "AEMO NEMWeb | "
-        "AusClimate -- University of Technology Sydney 2026"
+        "AusClimate - University of Technology Sydney 2026"
     )
 with cr:
     st.caption(f"Loaded: {datetime.now().strftime('%H:%M:%S')}")
