@@ -1,314 +1,5154 @@
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
+"""
+AusClimate Dashboard - dashboard/app.py
+Real-Time Australian Climate Analytics Platform
+University of Technology Sydney - Capstone 2026
+"""
+
 import sys
 import os
+import base64
+from PIL import Image
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Add project root to path so imports work
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from dotenv import load_dotenv
+load_dotenv()
 
-from config import PROCESSED_DATA_PATH
 
-# ── Page config ───────────────────────────────────────────────────────────────
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from config import (
+    PROCESSED_DATA_PATH,
+    MERGED_DATA_PATH,
+    STATION_SUMMARY_PATH,
+    BARRA2_CACHE_PATH,
+    AEMO_REGION_LABELS,
+    STATION_LIST_PATH,
+    FORECAST_OUTPUT_PATH,
+    BOM_HISTORY_PATH,
+)
+
+from forecasting.hazard_index import compute_station_hazards
+
+# Streamlit fragments let one widget rerun on its own, instead of the
+# whole page. Older Streamlit versions do not have st.fragment, so this
+# falls back to a plain pass through decorator rather than crashing.
+_fragment = getattr(st, "fragment", None)
+if _fragment is None:
+    def _fragment(func):
+        return func
+
+try:
+    _page_icon = Image.open(os.path.join(os.path.dirname(__file__), "assets", "logo.png"))
+except FileNotFoundError:
+    _page_icon = "🌡️"
+
+# ── Page config (must be first Streamlit call) ────────────────────────────────
 st.set_page_config(
     page_title="AusClimate",
-    page_icon="🌡️",
+    page_icon=_page_icon,
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# ── Load data ─────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=1800)
-def load_data():
-    if not os.path.exists(PROCESSED_DATA_PATH):
-        return pd.DataFrame()
-    return pd.read_parquet(PROCESSED_DATA_PATH)
+# ─────────────────────────────────────────────────────────────────────────────
+# THEME SYSTEM
+# Two fully defined themes. All legacy variable names (PLOT_BG, COLOUR_SCALE)
+# are derived from the theme so existing chart code needs zero changes.
+# ─────────────────────────────────────────────────────────────────────────────
 
-df = load_data()
-
-# ── Header ────────────────────────────────────────────────────────────────────
-st.title("🌡️ AusClimate")
-st.caption(
-    "Real-Time Australian Climate Analytics Platform  |  "
-    "Bureau of Meteorology Live Observation Data"
-)
-st.divider()
-
-# ── Empty state ───────────────────────────────────────────────────────────────
-if df.empty:
-    st.warning(
-        "No data loaded yet. Run `python main.py` first to ingest BOM data, "
-        "then refresh this page."
-    )
-    st.stop()
-
-# ── Sidebar controls ──────────────────────────────────────────────────────────
-st.sidebar.header("Controls")
-
-# Refresh button
-if st.sidebar.button("🔄 Refresh BOM Data", use_container_width=True):
-    with st.spinner("Fetching latest BOM data..."):
-        try:
-            from ingestion.bom import fetch_all_stations
-            from pipeline.cleaner import clean_bom_data
-            from pipeline.feature_eng import compute_station_summary
-            from pipeline.storage import save_parquet
-
-            df_raw  = fetch_all_stations()
-            df_clean = clean_bom_data(df_raw)
-            save_parquet(df_clean, PROCESSED_DATA_PATH)
-            st.cache_data.clear()
-            st.rerun()
-        except Exception as e:
-            st.error(f"Refresh failed: {e}")
-
-st.sidebar.divider()
-
-# Station selector
-all_stations = sorted(df["station_name"].unique().tolist())
-selected_stations = st.sidebar.multiselect(
-    "Select Stations",
-    options=all_stations,
-    default=all_stations[:6]
-)
-
-# Variable selector
-feature_options = {}
-if "temperature_c"  in df.columns: feature_options["Temperature (°C)"]      = "temperature_c"
-if "feels_like_c"   in df.columns: feature_options["Feels Like (°C)"]        = "feels_like_c"
-if "humidity_pct"   in df.columns: feature_options["Humidity (%)"]           = "humidity_pct"
-if "wind_speed_kmh" in df.columns: feature_options["Wind Speed (km/h)"]      = "wind_speed_kmh"
-if "gust_kmh"       in df.columns: feature_options["Max Gust (km/h)"]        = "gust_kmh"
-if "pressure_hpa"   in df.columns: feature_options["Pressure (hPa)"]         = "pressure_hpa"
-
-selected_label = st.sidebar.selectbox(
-    "Select Variable",
-    options=list(feature_options.keys())
-)
-selected_col = feature_options[selected_label]
-
-# Chart type
-chart_type = st.sidebar.radio(
-    "Chart Type",
-    options=["Bar", "Horizontal Bar", "Line", "Scatter"],
-    horizontal=True
-)
-
-# ── Filter data ───────────────────────────────────────────────────────────────
-if not selected_stations:
-    st.info("Select at least one station from the sidebar.")
-    st.stop()
-
-df_filtered = df[df["station_name"].isin(selected_stations)].copy()
-df_filtered[selected_col] = pd.to_numeric(df_filtered[selected_col], errors="coerce")
-
-summary = (
-    df_filtered.groupby("station_name")[selected_col]
-    .mean()
-    .dropna()
-    .reset_index()
-    .sort_values(selected_col, ascending=False)
-)
-summary.columns = ["Station", selected_label]
-
-# ── Stats row ─────────────────────────────────────────────────────────────────
-if not summary.empty:
-    c1, c2, c3, c4 = st.columns(4)
-    avg_val     = summary[selected_label].mean()
-    max_val     = summary[selected_label].max()
-    min_val     = summary[selected_label].min()
-    max_station = summary.loc[summary[selected_label].idxmax(), "Station"]
-    min_station = summary.loc[summary[selected_label].idxmin(), "Station"]
-
-    c1.metric("Average",             f"{avg_val:.1f}")
-    c2.metric("Highest",             f"{max_val:.1f}",  max_station)
-    c3.metric("Lowest",              f"{min_val:.1f}",  min_station)
-    c4.metric("Range",               f"{max_val - min_val:.1f}")
-
-st.divider()
-
-# ── Chart ─────────────────────────────────────────────────────────────────────
-COLOUR_SCALE = "RdYlBu_r"
-
-if chart_type == "Bar":
-    fig = px.bar(
-        summary,
-        x="Station", y=selected_label,
-        color=selected_label,
-        color_continuous_scale=COLOUR_SCALE,
-        title=f"Average {selected_label} by Station",
-        text_auto=".1f"
-    )
-    fig.update_traces(textposition="outside")
-    fig.update_layout(coloraxis_showscale=False, xaxis_tickangle=-30)
-
-elif chart_type == "Horizontal Bar":
-    fig = px.bar(
-        summary.sort_values(selected_label),
-        x=selected_label, y="Station",
-        orientation="h",
-        color=selected_label,
-        color_continuous_scale=COLOUR_SCALE,
-        title=f"Average {selected_label} by Station",
-        text_auto=".1f"
-    )
-    fig.update_layout(coloraxis_showscale=False)
-
-elif chart_type == "Line":
-    if "local_date_time_full" in df_filtered.columns:
-        df_line = df_filtered.sort_values("local_date_time_full")
-        fig = px.line(
-            df_line,
-            x="local_date_time_full",
-            y=selected_col,
-            color="station_name",
-            title=f"{selected_label} Over Time",
-            labels={
-                selected_col: selected_label,
-                "local_date_time_full": "Time",
-                "station_name": "Station"
-            }
-        )
-    else:
-        fig = px.line(
-            summary,
-            x="Station", y=selected_label,
-            markers=True,
-            title=f"{selected_label} by Station"
-        )
-
-elif chart_type == "Scatter":
-    scatter_df = df_filtered[["station_name", selected_col]].dropna()
-    scatter_df = scatter_df.reset_index()
-    fig = px.scatter(
-        scatter_df,
-        x="index", y=selected_col,
-        color="station_name",
-        title=f"{selected_label} — All Observations",
-        labels={
-            selected_col: selected_label,
-            "index": "Observation Index",
-            "station_name": "Station"
-        },
-        opacity=0.6
-    )
-
-fig.update_layout(
-    plot_bgcolor="rgba(0,0,0,0)",
-    paper_bgcolor="rgba(0,0,0,0)",
-    font_family="Arial",
-    height=420,
-    margin=dict(t=50, b=40, l=40, r=20)
-)
-st.plotly_chart(fig, use_container_width=True)
-
-# ── Dashboard tiles ───────────────────────────────────────────────────────────
-st.divider()
-st.subheader("My Dashboard")
-
-if "tiles" not in st.session_state:
-    st.session_state.tiles = []
-
-col_add, col_clear = st.columns([1, 5])
-with col_add:
-    if st.button("➕ Add Chart to Dashboard", use_container_width=True):
-        st.session_state.tiles.append({
-            "stations": selected_stations.copy(),
-            "col": selected_col,
-            "label": selected_label,
-            "chart": chart_type
-        })
-with col_clear:
-    if st.button("Clear Dashboard", use_container_width=True):
-        st.session_state.tiles = []
-
-if st.session_state.tiles:
-    cols = st.columns(2)
-    for i, tile in enumerate(st.session_state.tiles):
-        with cols[i % 2]:
-            with st.container(border=True):
-                tile_df = df[df["station_name"].isin(tile["stations"])].copy()
-                tile_df[tile["col"]] = pd.to_numeric(tile_df[tile["col"]], errors="coerce")
-                tile_summary = (
-                    tile_df.groupby("station_name")[tile["col"]]
-                    .mean().dropna().reset_index()
-                )
-                tile_summary.columns = ["Station", tile["label"]]
-
-                if tile["chart"] == "Horizontal Bar":
-                    tile_fig = px.bar(
-                        tile_summary.sort_values(tile["label"]),
-                        x=tile["label"], y="Station",
-                        orientation="h",
-                        color=tile["label"],
-                        color_continuous_scale=COLOUR_SCALE,
-                        title=f"{tile['label']}",
-                        height=280
-                    )
-                elif tile["chart"] == "Line" and "local_date_time_full" in tile_df.columns:
-                    tile_fig = px.line(
-                        tile_df.sort_values("local_date_time_full"),
-                        x="local_date_time_full", y=tile["col"],
-                        color="station_name",
-                        title=f"{tile['label']}",
-                        height=280
-                    )
-                else:
-                    tile_fig = px.bar(
-                        tile_summary.sort_values(tile["label"], ascending=False),
-                        x="Station", y=tile["label"],
-                        color=tile["label"],
-                        color_continuous_scale=COLOUR_SCALE,
-                        title=f"{tile['label']}",
-                        height=280
-                    )
-
-                tile_fig.update_layout(
-                    coloraxis_showscale=False,
-                    margin=dict(t=40, b=20, l=20, r=20),
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    paper_bgcolor="rgba(0,0,0,0)"
-                )
-                st.plotly_chart(tile_fig, use_container_width=True)
-
-                if st.button(f"Remove", key=f"remove_{i}"):
-                    st.session_state.tiles.pop(i)
-                    st.rerun()
-
-# ── Station summary table ─────────────────────────────────────────────────────
-st.divider()
-st.subheader("Station Summary Table")
-
-display_cols = {
-    "station_name":    "Station",
-    "temperature_c":   "Temp (°C)",
-    "feels_like_c":    "Feels Like (°C)",
-    "humidity_pct":    "Humidity (%)",
-    "wind_speed_kmh":  "Wind (km/h)",
-    "gust_kmh":        "Gust (km/h)",
-    "pressure_hpa":    "Pressure (hPa)",
+THEMES = {
+    "dark": {
+        "bg_primary":     "#101C22",
+        "bg_card":        "#16262A",
+        "bg_sidebar":     "#0B1519",
+        "bg_input":       "#1C2F33",
+        "text_primary":   "#EAF4F2",
+        "text_secondary": "#8FB0AC",
+        "text_muted":     "#56716E",
+        "border":         "#223B40",
+        "border_light":   "#2C4D52",
+        "accent":         "#1D8269",
+        "accent_light":   "#5EEAC0",
+        "success":        "#4ADE80",
+        "warning":        "#F2B04A",
+        "critical":       "#F0727E",
+        "plot_bg":        "rgba(0,0,0,0)",
+        "paper_bg":       "rgba(0,0,0,0)",
+        "plotly_tmpl":    "plotly_dark",
+        "grid_color":     "rgba(255,255,255,0.05)",
+        "axis_color":     "rgba(255,255,255,0.08)",
+        "mapbox_style":   "open-street-map",
+    },
+    "light": {
+        "bg_primary":     "#F6F1E7",
+        "bg_card":        "#FFFDF8",
+        "bg_sidebar":     "#F1EADC",
+        "bg_input":       "#EDE4D3",
+        "text_primary":   "#2B2016",
+        "text_secondary": "#766249",
+        "text_muted":     "#A4916F",
+        "border":         "#E3D7C0",
+        "border_light":   "#D8C9AA",
+        "accent":         "#EB8C58",
+        "accent_light":   "#DD7C44",
+        "success":        "#4C9A6B",
+        "warning":        "#C98A2A",
+        "critical":       "#C1443B",
+        "plot_bg":        "rgba(0,0,0,0)",
+        "paper_bg":       "rgba(0,0,0,0)",
+        "plotly_tmpl":    "plotly_white",
+        "grid_color":     "rgba(43,32,22,0.06)",
+        "axis_color":     "rgba(43,32,22,0.10)",
+        "mapbox_style":   "open-street-map",
+    },
 }
 
-available = [c for c in display_cols if c in df_filtered.columns]
-table_df  = df_filtered[available].copy()
+if "theme" not in st.session_state:
+    st.session_state.theme = "dark"
 
-for col in available[1:]:
-    table_df[col] = pd.to_numeric(table_df[col], errors="coerce")
+T = THEMES[st.session_state.theme]
 
-table_summary = (
-    table_df.groupby("station_name")
-    .mean(numeric_only=True)
-    .round(1)
-    .reset_index()
+# ── Stakeholder mode system ───────────────────────────────────────────────────
+
+STAKEHOLDER_MODES = {
+    "council":    {
+        "label":   "Local Council",
+        "icon":    "",
+        "desc":    "Heat stress monitoring, station vulnerability, risk mapping",
+        "primary": "Station Map",
+        "tabs":    ["Station Map", "Anomalies", "Data Table", "Population Risk",
+                    "BARRA2 Comparison", "Energy",  "Clustering", "Overview"],
+    },
+    "emergency":  {
+        "label":   "Emergency Services",
+        "icon":    "",
+        "desc":    "Live risk flags, compound anomalies, energy-climate alerts",
+        "primary": "Anomalies",
+        "tabs":    ["Anomalies", "Population Risk", "Energy", "Station Map", "Overview",
+                    "BARRA2 Comparison", "Data Table",  "Clustering"],
+    }, 
+    "government": {
+        "label":   "Government Agency",
+        "icon":    "",
+        "desc":    "Historical baselines, policy data, exports and reporting",
+        "primary": "BARRA2 Comparison",
+        "tabs":    ["BARRA2 Comparison", "Data Table", "Population Risk","Anomalies",  "Clustering",
+                    "Overview", "Station Map", "Energy"],
+    },
+    "researcher": {
+        "label":   "Researcher",
+        "icon":    "",
+        "desc":    "SHAP attribution, BARRA2 reanalysis, full data access",
+        "primary": "BARRA2 Comparison",
+        "tabs":    ["BARRA2 Comparison", "Anomalies",  "Clustering", "Population Risk", "Data Table",
+                    "Station Map", "Overview", "Energy"],
+    },
+    "all":        {
+        "label":   "Full Platform",
+        "icon":    "",
+        "desc":    "All features and all tabs",
+        "primary": "Overview",
+        "tabs":    ["Overview", "Station Map", "Anomalies",
+                    "BARRA2 Comparison", "Data Table", "Energy", "Clustering", "Population Risk"],
+    },
+} 
+
+if "stakeholder_mode" not in st.session_state:
+    st.session_state.stakeholder_mode = None
+
+MODE = st.session_state.stakeholder_mode
+
+# Legacy variable names - keep all existing chart code working unchanged
+PLOT_BG           = T["plot_bg"]
+PAPER_BG          = T["paper_bg"]
+COLOUR_SCALE      = "RdYlBu_r"
+COLOUR_SCALE_TEMP = "RdYlBu_r"
+COLOUR_SCALE_DIV  = "RdBu_r"
+COLOUR_SCALE_SEQ  = "YlOrRd"
+COLOUR_SCALE_BLUE = "Blues"
+
+
+# ── CSS ───────────────────────────────────────────────────────────────────────
+
+def build_css(T: dict) -> str:
+    is_dark = T["bg_primary"].startswith("#0") or T["bg_primary"].startswith("#1")
+    shadow  = "0 1px 3px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3)" \
+        if is_dark else "0 1px 3px rgba(0,0,0,0.08), 0 4px 12px rgba(0,0,0,0.06)"
+    shadow_hover = "0 2px 8px rgba(0,0,0,0.5), 0 8px 24px rgba(0,0,0,0.35)" \
+        if is_dark else "0 2px 8px rgba(0,0,0,0.12), 0 8px 24px rgba(0,0,0,0.08)"
+    return f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+:root {{
+    --st-background-color: {T["bg_primary"]} !important;
+    --st-secondary-background-color: {T["bg_input"]} !important;
+    --st-border-color: {T["border"]} !important;
+    --st-text-color: {T["text_primary"]} !important;
+    --st-primary-color: {T["accent"]} !important;
+}}
+
+/* ── Reset ──────────────────────────────────────────────────── */
+*, *::before, *::after {{ box-sizing: border-box; }}
+html, body, [class*="css"] {{
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}}
+#MainMenu, footer {{ visibility: hidden; }}
+header {{ visibility: hidden; }}
+/* No collapse control at all - sidebar always visible, nothing to break */
+[data-testid="stSidebarCollapseButton"],
+[data-testid*="CollapsedControl" i],
+[data-testid*="SidebarCollapse" i] {{
+    display: none !important;
+}}
+
+
+
+/* ── App background ─────────────────────────────────────────── */
+.stApp {{
+    background-color: {T["bg_primary"]} !important;
+}}
+div[data-testid="stMainBlockContainer"] {{
+    padding-top: 24px !important;
+    padding-left: 2rem !important;
+    padding-right: 2rem !important;
+}}
+
+/* ── Sidebar ────────────────────────────────────────────────── */
+section[data-testid="stSidebar"] {{
+    background-color: {T["bg_sidebar"]} !important;
+    border-right: 1px solid {T["border"]} !important;
+    box-shadow: 2px 0 12px rgba(0,0,0,0.15) !important;
+}}
+[data-testid="stSidebarHeader"] {{
+    display: none !important;
+}}
+section[data-testid="stSidebar"] > div {{
+    padding-top: 8px !important;
+}}
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] .stMarkdown p {{
+    color: {T["text_secondary"]} !important;
+    font-size: 12px !important;
+}}
+section[data-testid="stSidebar"] .stMultiSelect span,
+section[data-testid="stSidebar"] .stSelectbox span {{
+    color: {T["text_primary"]} !important;
+    font-size: 12px !important;
+}}
+
+/* ── Metric cards ───────────────────────────────────────────── */
+div[data-testid="metric-container"] {{
+    background-color: {T["bg_card"]} !important;
+    border: 1px solid {T["border"]} !important;
+    border-left: 3px solid {T["accent"]} !important;
+    border-radius: 8px !important;
+    padding: 16px 20px 14px !important;
+    box-shadow: {shadow} !important;
+    transition: all 0.2s ease !important;
+    position: relative;
+    overflow: hidden;
+}}
+div[data-testid="metric-container"]:hover {{
+    border-left-color: {T["accent_light"]} !important;
+    box-shadow: {shadow_hover} !important;
+    transform: translateY(-1px);
+}}
+div[data-testid="metric-container"] label {{
+    color: {T["text_secondary"]} !important;
+    font-size: 10px !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.12em !important;
+    margin-bottom: 6px !important;
+}}
+div[data-testid="metric-container"] [data-testid="stMetricValue"] {{
+    color: {T["text_primary"]} !important;
+    font-size: 26px !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.03em !important;
+    line-height: 1.1 !important;
+}}
+div[data-testid="metric-container"] [data-testid="stMetricDelta"] {{
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    color: {T["text_secondary"]} !important;
+    margin-top: 4px !important;
+}}
+
+/* ── Tabs ───────────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {{
+    background-color: {T["bg_card"]} !important;
+    border: 1px solid {T["border"]} !important;
+    border-bottom: none !important;
+    border-radius: 8px 8px 0 0 !important;
+    padding: 6px 6px 0 !important;
+    gap: 2px !important;
+    box-shadow: {shadow} !important;
+}}
+.stTabs [data-baseweb="tab"] {{
+    background: transparent !important;
+    border-radius: 6px 6px 0 0 !important;
+    color: {T["text_secondary"]} !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    padding: 9px 16px !important;
+    border: none !important;
+    transition: all 0.18s ease !important;
+    letter-spacing: 0.01em !important;
+}}
+.stTabs [data-baseweb="tab"]:hover {{
+    color: {T["text_primary"]} !important;
+    background-color: {T["border"]}60 !important;
+}}
+.stTabs [aria-selected="true"] {{
+    color: {T["accent_light"]} !important;
+    font-weight: 700 !important;
+    background-color: {T["bg_primary"]} !important;
+    border-bottom: 3px solid {T["accent"]} !important;
+}}
+.stTabs [data-baseweb="tab-panel"] {{
+    background-color: {T["bg_primary"]} !important;
+    border: 1px solid {T["border"]} !important;
+    border-top: none !important;
+    border-radius: 0 0 8px 8px !important;
+    padding: 24px 20px !important;
+}}
+/* ── Sticky tabs - stay visible while scrolling ────────── */
+.stTabs [data-baseweb="tab-list"] {{
+    position: sticky !important;
+    top: 0px !important;
+    z-index: 999 !important;
+    background-color: {T["bg_card"]} !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
+}}
+/* Inner sub-tab lists sit below outer tab list */
+.stTabs .stTabs [data-baseweb="tab-list"] {{
+    top: 0px !important;
+    z-index: 998 !important;
+    background-color: {T["bg_primary"]} !important;
+    border-radius: 6px !important;
+    padding: 4px !important;
+    box-shadow: none !important;
+    border: 1px solid {T["border"]} !important;
+    border-bottom: none !important;
+}}
+.stTabs .stTabs [aria-selected="true"] {{
+    background-color: {T["bg_card"]} !important;
+    color: {T["accent_light"]} !important;
+    font-weight: 700 !important;
+    border-bottom: 2px solid {T["accent"]} !important;
+}}
+.stTabs .stTabs [data-baseweb="tab-panel"] {{
+    background-color: {T["bg_primary"]} !important;
+    border: 1px solid {T["border"]} !important;
+    border-top: none !important;
+    border-radius: 0 0 6px 6px !important;
+    padding: 20px !important;
+}}
+
+/* ── Buttons ────────────────────────────────────────────────── */
+.stButton > button {{
+    background-color: {T["bg_card"]} !important;
+    border: 1px solid {T["border"]} !important;
+    color: {T["text_secondary"]} !important;
+    border-radius: 6px !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    padding: 7px 16px !important;
+    transition: all 0.18s ease !important;
+    letter-spacing: 0.01em !important;
+    box-shadow: {shadow} !important;
+}}
+.stButton > button:hover {{
+    background-color: {T["accent"]} !important;
+    border-color: {T["accent"]} !important;
+    color: #ffffff !important;
+    box-shadow: 0 4px 12px {T["accent"]}40 !important;
+    transform: translateY(-1px) !important;
+}}
+.stButton > button:active {{
+    transform: translateY(0) !important;
+}}
+
+/* ── Inputs ─────────────────────────────────────────────────── */
+[data-testid="stSelectbox"] .react-aria-ComboBox:not(#ac-boost):not(#ac-boost2),
+[data-testid="stMultiSelect"] .react-aria-ComboBox:not(#ac-boost):not(#ac-boost2),
+[data-testid="stSelectbox"] [data-rac][role="group"]:not(#ac-boost):not(#ac-boost2),
+[data-testid="stMultiSelect"] [data-rac][role="group"]:not(#ac-boost):not(#ac-boost2) {{
+    background-color: {T["bg_input"]} !important;
+    border: 1px solid {T["border"]} !important;
+    border-radius: 6px !important;
+}}
+[data-testid="stSelectbox"] .react-aria-ComboBox input,
+[data-testid="stMultiSelect"] .react-aria-ComboBox input,
+[data-testid="stSelectbox"] .react-aria-ComboBoxValue,
+[data-testid="stMultiSelect"] .react-aria-ComboBoxValue {{
+    background-color: transparent !important;
+    color: {T["text_primary"]} !important;
+    font-size: 12px !important;
+}}
+.stRadio [data-baseweb="radio"] {{
+    gap: 6px !important;
+}}
+.stRadio label,
+.stRadio [data-testid="stWidgetLabel"] {{
+    color: {T["text_secondary"]} !important;
+    font-size: 11px !important;
+}}
+
+/* ── Dropdown list (react-aria Popover / ListBox / ListBoxItem) ── */
+.react-aria-Popover,
+div[role="listbox"] {{
+    background-color: {T["bg_card"]} !important;
+    border: 1px solid {T["border"]} !important;
+    border-radius: 6px !important;
+}}
+.react-aria-ListBox,
+[role="listbox"] {{
+    background-color: {T["bg_card"]} !important;
+}}
+.react-aria-ListBoxItem,
+[role="option"] {{
+    background-color: {T["bg_card"]} !important;
+    color: {T["text_primary"]} !important;
+    font-size: 12px !important;
+}}
+.react-aria-ListBoxItem[data-hovered],
+[role="option"][data-hovered],
+.react-aria-ListBoxItem[data-focused],
+[role="option"][data-focused] {{
+    background-color: {T["bg_input"]} !important;
+    color: {T["text_primary"]} !important;
+}}
+.react-aria-ListBoxItem[data-selected],
+[role="option"][aria-selected="true"] {{
+    background-color: {T["accent"]}20 !important;
+    color: {T["accent"]} !important;
+}}
+
+/* ── Multiselect tags/pills ─────────────────────────────────── */
+[data-testid="stMultiSelect"] *:has(> span[title]) {{
+    background-color: {T["accent"]} !important;
+    border-radius: 99px !important;
+    border: none !important;
+}}
+[data-testid="stMultiSelect"] span[title] {{
+    background-color: transparent !important;
+    color: #ffffff !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+}}
+[data-testid="stMultiSelect"] span[title] svg,
+[data-testid="stMultiSelect"] *:has(> span[title]) button,
+[data-testid="stMultiSelect"] *:has(> span[title]) svg {{
+    color: #ffffff !important;
+    fill: #ffffff !important;
+}}
+
+/* ── DataFrames ─────────────────────────────────────────────── */
+.stDataFrame {{
+    border: 1px solid {T["border"]} !important;
+    border-radius: 8px !important;
+    overflow: hidden !important;
+    box-shadow: {shadow} !important;
+}}
+.stDataFrame th {{
+    background-color: {T["bg_input"]} !important;
+    color: {T["text_secondary"]} !important;
+    font-size: 10px !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+    padding: 10px 12px !important;
+    border-bottom: 1px solid {T["border"]} !important;
+}}
+.stDataFrame td {{
+    font-size: 12px !important;
+    color: {T["text_primary"]} !important;
+    padding: 8px 12px !important;
+    border-bottom: 1px solid {T["border"]}50 !important;
+}}
+
+/* ── Alerts ─────────────────────────────────────────────────── */
+div[data-testid="stNotification"],
+.stAlert {{
+    border-radius: 7px !important;
+    border-left-width: 4px !important;
+    font-size: 13px !important;
+}}
+.stSuccess {{
+    background-color: {T["success"]}12 !important;
+    border-left: 4px solid {T["success"]} !important;
+    color: {T["success"]} !important;
+}}
+.stInfo {{
+    background-color: {T["accent"]}12 !important;
+    border-left: 4px solid {T["accent"]} !important;
+    color: {T["accent_light"]} !important;
+}}
+.stWarning {{
+    background-color: {T["warning"]}12 !important;
+    border-left: 4px solid {T["warning"]} !important;
+    color: {T["warning"]} !important;
+}}
+.stError {{
+    background-color: {T["critical"]}12 !important;
+    border-left: 4px solid {T["critical"]} !important;
+    color: {T["critical"]} !important;
+}}
+
+/* ── Dividers ───────────────────────────────────────────────── */
+hr {{
+    border: none !important;
+    border-top: 1px solid {T["border"]} !important;
+    margin: 20px 0 !important;
+}}
+
+/* ── Download button ────────────────────────────────────────── */
+.stDownloadButton > button {{
+    background-color: {T["accent"]} !important;
+    border: 1px solid {T["accent"]} !important;
+    color: #fff !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.02em !important;
+    box-shadow: 0 2px 8px {T["accent"]}40 !important;
+}}
+.stDownloadButton > button:hover {{
+    background-color: {T["accent_light"]} !important;
+    border-color: {T["accent_light"]} !important;
+    transform: translateY(-1px) !important;
+}}
+
+/* ── Spinner ────────────────────────────────────────────────── */
+.stSpinner > div {{ border-top-color: {T["accent"]} !important; }}
+
+/* ── Chat ───────────────────────────────────────────────────── */
+[data-testid="stChatMessage"] {{
+    background-color: {T["bg_card"]} !important;
+    border: 1px solid {T["border"]} !important;
+    border-radius: 8px !important;
+    padding: 14px 18px !important;
+    margin-bottom: 10px !important;
+    box-shadow: {shadow} !important;
+}}
+
+/* ── Scrollbar ──────────────────────────────────────────────── */
+::-webkit-scrollbar {{ width: 4px; height: 4px; }}
+::-webkit-scrollbar-track {{ background: transparent; }}
+::-webkit-scrollbar-thumb {{
+    background: {T["border"]};
+    border-radius: 4px;
+}}
+::-webkit-scrollbar-thumb:hover {{
+    background: {T["accent"]};
+}}
+
+/* ── Expander ───────────────────────────────────────────────── */
+.streamlit-expanderHeader,
+[data-testid="stExpander"] summary {{
+    background-color: {T["bg_card"]} !important;
+    border: 1px solid {T["border"]} !important;
+    border-radius: 6px !important;
+    color: {T["text_secondary"]} !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+}}
+[data-testid="stExpander"] summary span,
+[data-testid="stExpander"] summary p,
+[data-testid="stExpander"] summary svg {{
+    color: {T["text_secondary"]} !important;
+    fill: {T["text_secondary"]} !important;
+}}
+[data-testid="stExpander"] details {{
+    background-color: {T["bg_primary"]} !important;
+    border: 1px solid {T["border"]} !important;
+    border-top: none !important;
+    border-radius: 0 0 6px 6px !important;
+}}
+[data-testid="stExpanderDetails"] {{
+    background-color: {T["bg_primary"]} !important;
+    color: {T["text_primary"]} !important;
+}}
+
+/* ── Text visibility (critical for light mode) ──────────── */
+h1, h2, h3, h4, h5, h6 {{
+    color: {T["text_primary"]} !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.02em !important;
+}}
+p, span, label, div {{
+    color: {T["text_primary"]};
+}}
+.stMarkdown, .stMarkdown p, .stMarkdown span {{
+    color: {T["text_primary"]} !important;
+}}
+.stSubheader, [data-testid="stHeading"] {{
+    color: {T["text_primary"]} !important;
+}}
+.stCaption, [data-testid="stCaptionContainer"] p {{
+    color: {T["text_muted"]} !important;
+    font-size: 11px !important;
+}}
+/* Tab panel text */
+.stTabs [data-baseweb="tab-panel"] p,
+.stTabs [data-baseweb="tab-panel"] span,
+.stTabs [data-baseweb="tab-panel"] label {{
+    color: {T["text_primary"]} !important;
+}}
+/* Radio and checkbox labels */
+.stRadio label span,
+.stCheckbox label span {{
+    color: {T["text_primary"]} !important;
+}}
+/* Selectbox text */
+.stSelectbox [data-baseweb="select"] span,
+.stMultiSelect [data-baseweb="select"] span {{
+    color: {T["text_primary"]} !important;
+}}
+/* Success/info/warning text */
+.stSuccess p, .stSuccess span {{ color: {T["success"]} !important; }}
+.stInfo p, .stInfo span {{ color: {T["accent_light"]} !important; }}
+.stWarning p, .stWarning span {{ color: {T["warning"]} !important; }}
+.stError p, .stError span {{ color: {T["critical"]} !important; }}
+
+/* ──────────────────────────────────────────────────────────── */
+/* CUSTOM COMPONENTS                                           */
+/* ──────────────────────────────────────────────────────────── */
+
+/* Operational header */
+.aus-header {{
+    background: linear-gradient(135deg,
+        {T["bg_card"]} 0%,
+        {T["bg_input"]} 100%);
+    border: 1px solid {T["border"]};
+    border-radius: 10px;
+    padding: 18px 24px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 14px;
+    box-shadow: {shadow};
+    position: relative;
+    overflow: hidden;
+}}
+.aus-header::after {{
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg,
+        {T["accent"]}, {T["success"]}, {T["accent_light"]});
+    opacity: 0.6;
+}}
+.aus-header-left {{
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}}
+.aus-header-icon {{
+    width: 40px;
+    height: 40px;
+    background: {T["bg_input"]};
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    flex-shrink: 0;
+    box-shadow: 0 4px 12px {T["accent"]}40;
+    overflow: hidden;
+}}
+.aus-header-icon img {{
+    width: 150%;
+    height: 150%;
+    object-fit: cover;
+}}
+.aus-header-title {{
+    font-size: 20px;
+    font-weight: 800;
+    color: {T["text_primary"]};
+    letter-spacing: -0.03em;
+    line-height: 1;
+}}
+.aus-header-sub {{
+    font-size: 11px;
+    color: {T["text_secondary"]};
+    margin-top: 3px;
+    letter-spacing: 0.02em;
+}}
+.aus-header-right {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}}
+.aus-timestamp {{
+    font-size: 10px;
+    color: {T["text_muted"]};
+    letter-spacing: 0.05em;
+    font-variant-numeric: tabular-nums;
+    margin-left: 4px;
+}}
+
+/* Badges */
+.aus-badge {{
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 99px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    transition: all 0.15s;
+}}
+.aus-badge-live {{
+    background: {T["success"]}20;
+    color: {T["success"]};
+    border: 1px solid {T["success"]}50;
+}}
+.aus-badge-live::before {{
+    content: '';
+    width: 6px; height: 6px;
+    background: {T["success"]};
+    border-radius: 50%;
+    display: inline-block;
+    animation: pulse-green 2s infinite;
+}}
+.aus-badge-pending {{
+    background: {T["warning"]}20;
+    color: {T["warning"]};
+    border: 1px solid {T["warning"]}50;
+}}
+.aus-badge-pending::before {{
+    content: '';
+    width: 6px; height: 6px;
+    background: {T["warning"]};
+    border-radius: 50%;
+    display: inline-block;
+}}
+.aus-badge-offline {{
+    background: {T["text_muted"]}15;
+    color: {T["text_muted"]};
+    border: 1px solid {T["text_muted"]}30;
+}}
+.aus-badge-offline::before {{
+    content: '';
+    width: 6px; height: 6px;
+    background: {T["text_muted"]};
+    border-radius: 50%;
+    display: inline-block;
+}}
+
+@keyframes pulse-green {{
+    0%, 100% {{ opacity: 1; box-shadow: 0 0 0 0 {T["success"]}60; }}
+    50% {{ opacity: 0.8; box-shadow: 0 0 0 4px {T["success"]}00; }}
+}}
+
+/* Sidebar brand */
+.aus-sidebar-brand {{
+    padding: 24px 4px 16px;
+    border-bottom: 1px solid {T["border"]};
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}}
+.aus-sidebar-brand-logo {{
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex-shrink: 0;
+}}
+.aus-sidebar-brand-text {{
+    display: flex;
+    flex-direction: column;
+}}
+.aus-sidebar-brand-title {{
+    font-size: 16px;
+    font-weight: 800;
+    color: {T["text_primary"]};
+    letter-spacing: -0.03em;
+    line-height: 1;
+}}
+.aus-sidebar-brand-dot {{
+    display: inline-block;
+    width: 7px; height: 7px;
+    background: {T["accent"]};
+    border-radius: 50%;
+    margin-left: 2px;
+    vertical-align: super;
+    font-size: 6px;
+}}
+.aus-sidebar-brand-sub {{
+    font-size: 9px;
+    color: {T["text_muted"]};
+    letter-spacing: 0.1em;
+    margin-top: 3px;
+    text-transform: uppercase;
+    font-weight: 500;
+}}
+
+/* Section labels */
+.aus-section-label {{
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: {T["text_muted"]};
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid {T["border"]};
+}}
+
+/* Source rows in sidebar */
+.aus-src-row {{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid {T["border"]}50;
+}}
+.aus-src-row:last-child {{ border-bottom: none; }}
+.aus-src-label {{
+    font-size: 12px;
+    color: {T["text_secondary"]};
+    font-weight: 500;
+}}
+.aus-src-wrap {{
+    margin-bottom: 12px;
+    background: {T["bg_input"]};
+    border: 1px solid {T["border"]};
+    border-radius: 8px;
+    padding: 6px 12px;
+}}
+
+/* Info cards for tab content */
+.aus-info-card {{
+    background: {T["bg_card"]};
+    border: 1px solid {T["border"]};
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 12px 0;
+    box-shadow: {shadow};
+}}
+
+/* ── Stakeholder landing ─────────────────────────────────── */
+.mode-card {{
+    background: {T["bg_card"]};
+    border: 1px solid {T["border"]};
+    border-radius: 10px;
+    padding: 24px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    height: 100%;
+}}
+.mode-card:hover {{
+    border-color: {T["accent"]};
+    box-shadow: 0 4px 20px {T["accent"]}25;
+    transform: translateY(-2px);
+}}
+.mode-card-icon {{
+    font-size: 36px;
+    margin-bottom: 12px;
+    line-height: 1;
+}}
+.mode-card-title {{
+    font-size: 15px;
+    font-weight: 700;
+    color: {T["text_primary"]};
+    margin-bottom: 8px;
+    letter-spacing: -0.01em;
+}}
+.mode-card-desc {{
+    font-size: 11px;
+    color: {T["text_secondary"]};
+    line-height: 1.5;
+}}
+.mode-landing-header {{
+    text-align: center;
+    padding: 40px 20px 32px;
+    background: linear-gradient(135deg,
+        {T["bg_card"]} 0%, {T["bg_input"]} 100%);
+    border: 1px solid {T["border"]};
+    border-radius: 12px;
+    margin-bottom: 28px;
+    position: relative;
+    overflow: hidden;
+}}
+.mode-landing-header::after {{
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg,
+        {T["accent"]}, {T["success"]}, {T["accent_light"]});
+}}
+.mode-tag {{
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 12px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 600;
+    background: {T["accent"]}18;
+    color: {T["accent_light"]};
+    border: 1px solid {T["accent"]}40;
+    margin-bottom: 16px;
+}}
+</style>
+"""
+st.markdown(build_css(T), unsafe_allow_html=True)
+
+# ── Chart layout helper ───────────────────────────────────────────────────────
+
+def chart_layout(fig,
+                 title: str = "",
+                 height: int = 400,
+                 xangle: int = 0,
+                 legend: bool = False,
+                 margin: dict = None) -> object:
+    """Apply consistent professional layout to any plotly figure."""
+    if margin is None:
+        margin = dict(t=44, b=36, l=44, r=16)
+    fig.update_layout(
+        title=dict(
+            text=title,
+            font=dict(size=13, color=T["text_primary"],
+                      family="Inter, -apple-system, sans-serif"),
+            x=0, xanchor="left",
+            pad=dict(l=0, t=0),
+        ),
+        plot_bgcolor=T["plot_bg"],
+        paper_bgcolor=T["paper_bg"],
+        font=dict(
+            family="Inter, -apple-system, sans-serif",
+            size=11,
+            color=T["text_primary"],      # changed from text_secondary
+        ),
+        height=height,
+        margin=margin,
+        showlegend=legend,
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            bordercolor=T["border"],
+            borderwidth=1,
+            font=dict(size=11, color=T["text_primary"]),
+        ),
+        xaxis=dict(
+            gridcolor=T["grid_color"],
+            linecolor=T["axis_color"],
+            tickfont=dict(size=10, color=T["text_primary"]),
+            tickangle=xangle,
+            title_font=dict(size=11, color=T["text_secondary"]),
+            zeroline=False,
+        ),
+        yaxis=dict(
+            gridcolor=T["grid_color"],
+            linecolor=T["axis_color"],
+            tickfont=dict(size=10, color=T["text_primary"]),
+            title_font=dict(size=11, color=T["text_secondary"]),
+            zeroline=False,
+        ),
+        coloraxis_showscale=False,
+        hoverlabel=dict(
+            bgcolor=T["bg_card"],
+            bordercolor=T["border"],
+            font=dict(size=11, color=T["text_primary"]),
+        ),
+        template=T["plotly_tmpl"],
+    )
+    return fig
+
+def hex_to_rgba(hex_color: str, alpha: float = 0.15) -> str:
+    """Convert a '#RRGGBB' hex color to an rgba() string Plotly accepts for fillcolor."""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+def map_layout(fig,
+               T: dict,
+               title: str = "",
+               height: int = 600,
+               center_lat: float = -26.0,
+               center_lon: float = 134.0,
+               zoom: float = 3.4,
+               legend: bool = False) -> object:
+    """
+    Apply consistent full-width Australia map layout.
+    Uses open-street-map tiles - free, no API key, no watermark.
+    Fills the full container width and shows proper map detail.
+    """
+    is_dark = (
+        T["bg_primary"].startswith("#0") or
+        T["bg_primary"].startswith("#1")
+    )
+
+    fig.update_layout(
+        mapbox=dict(
+            style="open-street-map",
+            center=dict(lat=center_lat, lon=center_lon),
+            zoom=zoom,
+        ),
+        height=height,
+        margin=dict(t=44, b=0, l=0, r=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=legend,
+        legend=dict(
+            bgcolor=T["bg_card"],
+            bordercolor=T["border"],
+            borderwidth=1,
+            font=dict(size=11, color=T["text_primary"]),
+        ) if legend else {},
+    )
+
+    if title:
+        fig.update_layout(
+            title=dict(
+                text=title,
+                font=dict(size=13, color=T["text_primary"],
+                          family="Inter, -apple-system, sans-serif"),
+                x=0, xanchor="left",
+                pad=dict(l=8, t=8),
+            )
+        )
+
+    # Dark overlay: for dark theme add a semi-transparent dark layer
+    # by darkening the map opacity slightly
+    if is_dark:
+        fig.update_traces(
+            marker=dict(opacity=0.9)
+        )
+
+    return fig
+
+@st.cache_data(ttl=120)
+def build_climate_context() -> str:
+    """
+    Summarise the live pipeline data as text so the assistant's
+    answers are grounded in current conditions rather than guesses.
+    """
+    lines = ["=== LIVE AUSCLIMATE DATA ==="]
+
+    n_stn = df["station_name"].nunique() if "station_name" in df.columns else 0
+    lines.append(f"BOM stations reporting: {n_stn}")
+
+    if "state" in df.columns:
+        states = sorted(df["state"].dropna().unique().tolist())
+        lines.append(f"States covered: {', '.join(states)}")
+
+    if "temperature_c" in df.columns:
+        t = pd.to_numeric(df["temperature_c"], errors="coerce").dropna()
+        if not t.empty:
+            lines.append(
+                f"National temperature: avg {t.mean():.1f}C, "
+                f"max {t.max():.1f}C, min {t.min():.1f}C"
+            )
+
+    if not summary.empty and "mean_temperature_c" in summary.columns:
+        s = summary.copy()
+        s["mean_temperature_c"] = pd.to_numeric(
+            s["mean_temperature_c"], errors="coerce"
+        )
+        top5 = s.nlargest(5, "mean_temperature_c")
+        lines.append("Hottest stations:")
+        for _, r in top5.iterrows():
+            lines.append(
+                f"  {r['station_name']} ({r.get('state','?')}): "
+                f"{r['mean_temperature_c']:.1f}C"
+            )
+            
+        bottom5 = s.nsmallest(5, "mean_temperature_c")
+        lines.append("Coldest stations:")
+        for _, r in bottom5.iterrows():
+            lines.append(
+                f"  {r['station_name']} ({r.get('state','?')}): "
+                f"{r['mean_temperature_c']:.1f}C"
+            )
+
+    if "ml_anomaly_flag" in df.columns:
+        n_anom = int(df["ml_anomaly_flag"].sum())
+        lines.append(f"Isolation Forest anomalies flagged: {n_anom}")
+        if "ml_primary_driver" in df.columns:
+            drivers = (
+                df[df["ml_anomaly_flag"] == True]["ml_primary_driver"]
+                .replace("", np.nan).dropna()
+                .value_counts().head(3)
+            )
+            if not drivers.empty:
+                lines.append("Top anomaly drivers:")
+                for drv, cnt in drivers.items():
+                    lines.append(f"  {drv}: {cnt}")
+
+    if "ensemble_anomaly" in df.columns:
+        n_ens = int(df["ensemble_anomaly"].sum())
+        lines.append(f"High-confidence ensemble anomalies: {n_ens}")
+
+    if "barra2_temp_c" in df.columns:
+        b2 = pd.to_numeric(df["barra2_temp_c"], errors="coerce").dropna()
+        if not b2.empty and "temperature_c" in df.columns:
+            t_now = pd.to_numeric(
+                df["temperature_c"], errors="coerce"
+            ).dropna()
+            if not t_now.empty:
+                lines.append(
+                    f"Current vs BARRA2 2022 baseline: "
+                    f"{t_now.mean() - b2.mean():+.1f}C"
+                )
+
+    if aemo_available and "total_demand_mw" in df_aemo.columns:
+        lines.append(
+            f"Total NEM demand: {df_aemo['total_demand_mw'].sum():,.0f} MW"
+        )
+
+    if not df_clusters.empty and "cluster_label" in df_clusters.columns:
+        lines.append("Climate clusters:")
+        for cl, cnt in df_clusters["cluster_label"].value_counts().items():
+            lines.append(f"  {cl}: {cnt} stations")
+
+    lines.append("=== END ===")
+    return "\n".join(lines)
+
+def find_mentioned_station(text: str):
+    """
+    Looks for a live station name inside the user's message so the
+    assistant can answer questions about one specific station instead
+    of only ever seeing national aggregates.
+    """
+    if not text or "station_name" not in df.columns:
+        return None
+    text_low = text.lower()
+    names = df["station_name"].dropna().unique().tolist()
+    for name in sorted(names, key=len, reverse=True):
+        if isinstance(name, str) and name.lower() in text_low:
+            return name
+    return None
+
+def build_station_context(station_name: str) -> str:
+    """
+    Builds a focused data block for one station, pulled straight from
+    the live reading, the station summary, clustering and hazard
+    forecast, so the assistant can give a real summary for a named
+    station instead of only the national top five.
+    """
+    lines = [f"=== STATION FOCUS: {station_name} ==="]
+
+    if "station_name" in df.columns:
+        live = df[df["station_name"] == station_name]
+        if not live.empty:
+            row = live.iloc[-1]
+            if "state" in row.index and pd.notna(row.get("state")):
+                lines.append(f"State: {row['state']}")
+            if "temperature_c" in row.index and pd.notna(row.get("temperature_c")):
+                lines.append(f"Current temperature: {float(row['temperature_c']):.1f}C")
+            if "humidity_percent" in row.index and pd.notna(row.get("humidity_percent")):
+                lines.append(f"Humidity: {float(row['humidity_percent']):.0f}%")
+            if "wind_speed_kmh" in row.index and pd.notna(row.get("wind_speed_kmh")):
+                lines.append(f"Wind speed: {float(row['wind_speed_kmh']):.0f} km/h")
+            if "rainfall_mm" in row.index and pd.notna(row.get("rainfall_mm")):
+                lines.append(f"Rainfall: {float(row['rainfall_mm']):.1f} mm")
+            if "barra2_temp_c" in row.index and pd.notna(row.get("barra2_temp_c")) \
+                    and pd.notna(row.get("temperature_c")):
+                lines.append(
+                    f"Current vs BARRA2 2022 baseline: "
+                    f"{float(row['temperature_c']) - float(row['barra2_temp_c']):+.1f}C"
+                )
+            if "ml_anomaly_flag" in row.index:
+                flagged = bool(row["ml_anomaly_flag"])
+                lines.append(f"Anomaly flagged right now: {'yes' if flagged else 'no'}")
+                if flagged and "ml_primary_driver" in row.index \
+                        and pd.notna(row.get("ml_primary_driver")) and row["ml_primary_driver"]:
+                    lines.append(f"Primary anomaly driver: {row['ml_primary_driver']}")
+            if "ensemble_anomaly" in row.index and pd.notna(row.get("ensemble_anomaly")):
+                lines.append(
+                    f"High confidence ensemble anomaly: "
+                    f"{'yes' if bool(row['ensemble_anomaly']) else 'no'}"
+                )
+
+    if not summary.empty and "station_name" in summary.columns:
+        srow = summary[summary["station_name"] == station_name]
+        if not srow.empty:
+            s = srow.iloc[0]
+            if "mean_temperature_c" in s.index and pd.notna(s.get("mean_temperature_c")):
+                lines.append(f"Average temperature on record: {float(s['mean_temperature_c']):.1f}C")
+            if "vulnerability_index" in s.index and pd.notna(s.get("vulnerability_index")):
+                lines.append(f"Vulnerability index: {float(s['vulnerability_index']):.0f} out of 100")
+            if "population" in s.index and pd.notna(s.get("population")):
+                lines.append(f"Nearby population (ABS): {int(s['population']):,}")
+            if "seifa_score" in s.index and pd.notna(s.get("seifa_score")):
+                lines.append(
+                    f"Area SEIFA disadvantage score: {float(s['seifa_score']):.0f} "
+                    f"(1000 = national average, lower means more disadvantaged)"
+                )
+            if "population_risk_category" in s.index and pd.notna(s.get("population_risk_category")):
+                lines.append(f"Population risk category: {s['population_risk_category']}")
+
+    if not df_clusters.empty and "station_name" in df_clusters.columns \
+            and "cluster_label" in df_clusters.columns:
+        crow = df_clusters[df_clusters["station_name"] == station_name]
+        if not crow.empty:
+            lines.append(f"Climate cluster: {crow.iloc[0]['cluster_label']}")
+
+    try:
+        hazards = get_station_hazards(station_name, df_bom_history, load_forecast_data())
+        if hazards.get("available"):
+            ffdi_hourly = hazards.get("ffdi_hourly")
+            if ffdi_hourly is not None and not ffdi_hourly.empty:
+                peak_fire = ffdi_hourly.loc[ffdi_hourly["ffdi"].idxmax()]
+                lines.append(f"Bushfire danger (forecast peak): {peak_fire['ffdi_rating']}")
+            if hazards.get("rainfall_forecast_available"):
+                flood_hourly = hazards.get("flood_hourly")
+                if flood_hourly is not None and not flood_hourly.empty:
+                    peak_flood = flood_hourly.loc[flood_hourly["flood_score"].idxmax()]
+                    lines.append(f"Flash flood risk (forecast peak): {peak_flood['flood_rating']}")
+            if "ehf_rating" in hazards:
+                lines.append(f"Heatwave outlook: {hazards['ehf_rating']}")
+        elif hazards.get("reason"):
+            lines.append(f"Hazard forecast note: {hazards['reason']}")
+    except Exception:
+        pass
+
+    if len(lines) == 1:
+        lines.append("No further live data found yet for this station.")
+
+    lines.append("=== END STATION FOCUS ===")
+    return "\n".join(lines)
+
+
+def render_floating_assistant():
+    """
+    Floating chat button pinned to the bottom-right of the screen by
+    default, draggable by its header once open, and resizable between
+    a normal and expanded size. Stays visible on every tab because it
+    is rendered once, outside the tab blocks.
+    """
+    if "show_assistant" not in st.session_state:
+        st.session_state.show_assistant = False
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    if "assistant_expanded" not in st.session_state:
+        st.session_state.assistant_expanded = False
+
+    GEMINI_KEY    = os.environ.get("GEMINI_API_KEY", "").strip()
+    ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if ANTHROPIC_KEY:
+        PROVIDER, PROVIDER_LABEL = "anthropic", "Claude"
+    elif GEMINI_KEY:
+        PROVIDER, PROVIDER_LABEL = "gemini", "Gemini"
+    else:
+        PROVIDER, PROVIDER_LABEL = None, ""
+
+    is_open     = st.session_state.show_assistant
+    is_expanded = st.session_state.assistant_expanded and is_open
+
+    if is_expanded:
+        panel_width = "560px"
+    elif is_open:
+        panel_width = "420px"
+    else:
+        panel_width = "60px"
+
+    st.markdown(f"""
+    <style>
+    .st-key-ac_float {{
+        position: fixed !important;
+        bottom: 22px;
+        right: 22px;
+        z-index: 999999 !important;
+        width: {panel_width} !important;
+        background: {T['bg_card']} !important;
+        border-radius: {"14px" if is_open else "18px"} !important;
+        max-height: 85vh;
+        overflow-y: {"visible" if is_open else "hidden"} !important;
+        transition: width 0.22s ease, border-radius 0.22s ease !important;
+    }}
+    .st-key-ac_float [data-testid="stVerticalBlockBorderWrapper"] {{
+        background: {T['bg_card']} !important;
+        border: 1px solid {T['border']} !important;
+        border-radius: {"14px" if is_open else "18px"} !important;
+        box-shadow: 0 10px 32px rgba(0,0,0,0.42) !important;
+    }}
+    .st-key-ac_float button {{
+        border-radius: {"6px" if is_open else "18px"} !important;
+    }}
+    .st-key-ac_msgbox {{
+        overflow-y: auto !important;
+    }}
+    @media (max-width: 480px) {{
+        .st-key-ac_float {{ width: {"92vw" if is_open else "60px"} !important; }}
+    }}
+    #ac-drag-handle {{
+        cursor: move;
+        user-select: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }}
+    #ac-drag-handle .ac-grip {{
+        opacity: 0.45;
+        font-size: 13px;
+        letter-spacing: 1px;
+    }}
+    .st-key-ac_float .stButton button {{
+        background: {T['bg_input'] if is_open else T['accent']} !important;
+        border: 1px solid {T['border'] if is_open else T['accent']} !important;
+        color: {T['text_secondary'] if is_open else "#ffffff"} !important;
+        font-size: {"13px" if is_open else "28px"} !important;
+        width: {"auto" if is_open else "62px"} !important;
+        height: {"auto" if is_open else "62px"} !important;
+        padding: {"7px 16px" if is_open else "0"} !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease !important;
+    }}
+    .st-key-ac_float .stButton button:hover {{
+        background: {T['accent']} !important;
+        color: #ffffff !important;
+        border-color: {T['accent']} !important;
+        transform: {"none" if is_open else "scale(1.06)"} !important;
+    }}
+        .st-key-ac_float .st-key-ac_close button,
+    .st-key-ac_float .st-key-ac_expand button {{
+        width: 32px !important;
+        height: 32px !important;
+        min-width: 32px !important;
+        min-height: 32px !important;
+        padding: 0 !important;
+        font-size: 14px !important;
+        border-radius: 8px !important;
+        background: {T['bg_input']} !important;
+        color: {T['text_secondary']} !important;
+    }}
+    .st-key-ac_float [data-testid="stChatInputSubmitButton"] {{
+        background: {T['bg_input']} !important;
+        color: {T['text_secondary']} !important;
+    }}
+    .st-key-ac_float [data-testid="stChatInput"] {{
+        background: {T['bg_input']} !important;
+        border: 1px solid {T['border']} !important;
+        border-radius: 10px !important;
+    }}
+    .st-key-ac_float [data-testid="stChatInput"] > div {{
+        background: transparent !important;
+    }}
+    [data-testid="stTooltipContent"] {{
+        background: {T['bg_input']} !important;
+        color: {T['text_primary']} !important;
+        border: 1px solid {T['border']} !important;
+    }}
+    .st-key-ac_float [data-testid="stChatInput"] textarea {{
+        background: transparent !important;
+        color: {T['text_primary']} !important;
+    }}
+    .st-key-ac_float [data-testid="stChatInput"] textarea::placeholder {{
+        color: {T['text_muted']} !important;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    with st.container(key="ac_float", border=True):
+
+        if not is_open:
+            if st.button("", key="ac_open", help="Climate Assistant",
+                          icon=":material/chat:"):
+                st.session_state.show_assistant = True
+                st.rerun()
+
+        else:
+            top_l, top_m, top_r = st.columns([4, 1, 1])
+            with top_l:
+                st.markdown(
+                    f'<div id="ac-drag-handle">'
+                    f'<span class="ac-grip">⠿</span>'
+                    f'<strong>Climate Assistant</strong> &nbsp;'
+                    f"<span style='font-size:10px;color:{T['text_muted']}'>"
+                    f"{PROVIDER_LABEL}</span>"
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            with top_m:
+                expand_label = "⤡" if is_expanded else "⤢"
+                if st.button(expand_label, key="ac_expand",
+                             help="Minimise" if is_expanded else "Expand"):
+                    st.session_state.assistant_expanded = not is_expanded
+                    st.rerun()
+            with top_r:
+                if st.button("✕", key="ac_close"):
+                    st.session_state.show_assistant = False
+                    st.rerun()
+
+            if PROVIDER is None:
+                st.warning("No API key configured.", icon="⚠️")
+                st.caption("Add GEMINI_API_KEY to your .env file.")
+            else:
+
+                @_fragment
+                def _chat_panel():
+
+                    def _next():
+                        try:
+                            st.rerun(scope="fragment")
+                        except Exception:
+                            st.rerun()
+
+                    if not st.session_state.chat_history:
+                        examples = [
+                            "Which stations are anomalous?",
+                            "What's the hottest state right now?",
+                            "Summarise Sydney Airport",
+                        ]
+                        ex_cols = st.columns(3)
+                        for i, ex in enumerate(examples):
+                            with ex_cols[i]:
+                                if st.button(
+                                    ex, key=f"ac_ex_{i}",
+                                    use_container_width=True,
+                                    help=ex,
+                                ):
+                                    st.session_state.ac_pending = ex
+                                    _next()
+
+                    box_height = 420 if is_expanded else 300
+                    msg_box = st.container(height=box_height, key="ac_msgbox")
+                    with msg_box:
+                        if not st.session_state.chat_history:
+                            st.caption(
+                                "Ask about live stations, anomalies, or "
+                                "current conditions. Name a station for "
+                                "a summary of just that station."
+                            )
+                        for m in st.session_state.chat_history:
+                            with st.chat_message(m["role"]):
+                                st.markdown(m["content"])
+
+                        if st.session_state.get("ac_pending_question"):
+                            with st.chat_message("user"):
+                                st.markdown(st.session_state.ac_pending_question)
+                            with st.chat_message("assistant"):
+                                st.markdown("_Thinking..._")
+
+                    user_input = st.chat_input("Ask a question...", key="ac_input")
+                    if "ac_pending" in st.session_state:
+                        user_input = st.session_state.pop("ac_pending")
+
+                    if user_input and not st.session_state.get("ac_pending_question"):
+                        st.session_state.ac_pending_question = user_input
+                        _next()
+
+                    if st.session_state.get("ac_pending_question"):
+                        pending_q = st.session_state.pop("ac_pending_question")
+                        st.session_state.chat_history.append(
+                            {"role": "user", "content": pending_q}
+                        )
+
+                        context = build_climate_context()
+                        station_hit = find_mentioned_station(pending_q)
+                        if station_hit:
+                            context += "\n\n" + build_station_context(station_hit)
+
+                        system = (
+                            "You are AusClimate Assistant, built into a "
+                            "real-time Australian climate platform used by "
+                            "councils, emergency services, and agencies.\n"
+                            "Answer only from the data below. If a STATION "
+                            "FOCUS block is included, answer station "
+                            "specific questions from that block directly "
+                            "rather than the national figures. Be concise, "
+                            "plain language, no em dashes, no markdown "
+                            "headers, under 150 words unless asked for "
+                            "more detail.\n\n" + context
+                        )
+
+                        recent_history = st.session_state.chat_history[-8:]
+                        if recent_history and recent_history[0]["role"] != "user":
+                            recent_history = recent_history[1:]
+
+                        reply = ""
+                        try:
+                            if PROVIDER == "anthropic":
+                                import anthropic
+                                client = anthropic.Anthropic(
+                                    api_key=ANTHROPIC_KEY
+                                )
+                                messages = [
+                                    {"role": m["role"], "content": m["content"]}
+                                    for m in recent_history
+                                ]
+                                resp = client.messages.create(
+                                    model="claude-sonnet-5",
+                                    max_tokens=400,
+                                    system=system,
+                                    messages=messages,
+                                )
+                                reply = resp.content[0].text
+                            else:
+                                import google.generativeai as genai
+                                genai.configure(api_key=GEMINI_KEY)
+                                model = genai.GenerativeModel(
+                                    model_name="gemini-3.6-flash",
+                                    system_instruction=system,
+                                )
+                                history = []
+                                for m in recent_history[:-1]:
+                                    role = "model" if m["role"] == "assistant" \
+                                        else "user"
+                                    history.append({
+                                        "role": role, "parts": [m["content"]],
+                                    })
+                                chat  = model.start_chat(history=history)
+                                reply = chat.send_message(pending_q).text
+                        except Exception as e:
+                            reply = f"Error: {str(e)[:150]}"
+
+                        st.session_state.chat_history.append(
+                            {"role": "assistant", "content": reply}
+                        )
+                        _next()
+
+                _chat_panel()
+
+    # ── Neutralise ancestor transforms so position:fixed works ─────
+    st.components.v1.html("""
+    <script>
+    (function() {
+        var fixed = false;
+        function fixAncestors() {
+            if (fixed) return;
+            try {
+                var doc = window.parent.document;
+                var el  = doc.querySelector('.st-key-ac_float');
+                if (!el) return;
+                var node = el.parentElement;
+                var touched = false;
+                while (node && node !== doc.body) {
+                    var cs = window.parent.getComputedStyle(node);
+                    if (cs.transform && cs.transform !== 'none') {
+                        node.style.setProperty('transform', 'none', 'important');
+                        touched = true;
+                    }
+                    if (cs.filter && cs.filter !== 'none') {
+                        node.style.setProperty('filter', 'none', 'important');
+                        touched = true;
+                    }
+                    if (cs.perspective && cs.perspective !== 'none') {
+                        node.style.setProperty('perspective', 'none', 'important');
+                        touched = true;
+                    }
+                    if (cs.contain && cs.contain !== 'none') {
+                        node.style.setProperty('contain', 'none', 'important');
+                        touched = true;
+                    }
+                    if (cs.willChange && cs.willChange !== 'auto') {
+                        node.style.setProperty('will-change', 'auto', 'important');
+                        touched = true;
+                    }
+                    node = node.parentElement;
+                }
+                if (touched) fixed = true;
+            } catch (e) {}
+        }
+        fixAncestors();
+        var attempts = 0;
+        var interval = setInterval(function () {
+            attempts++;
+            fixAncestors();
+            if (fixed || attempts > 10) clearInterval(interval);
+        }, 300);
+    })();
+    </script>
+    """, height=0)
+
+    # ── Drag by the header, and keep the panel on-screen ────────────
+    drag_script = """
+    <script>
+    (function() {
+        var IS_OPEN = __IS_OPEN__;
+
+        function resetOrClamp() {
+            try {
+                var doc = window.parent.document;
+                var panel = doc.querySelector('.st-key-ac_float');
+                if (!panel) return;
+                if (!IS_OPEN) {
+                    panel.style.left = '';
+                    panel.style.top = '';
+                    panel.style.right = '';
+                    panel.style.bottom = '';
+                    return;
+                }
+                if (panel.style.left) {
+                    var rect = panel.getBoundingClientRect();
+                    var maxLeft = Math.max(4, window.parent.innerWidth - rect.width - 4);
+                    var maxTop  = Math.max(4, window.parent.innerHeight - rect.height - 4);
+                    var curLeft = parseFloat(panel.style.left);
+                    var curTop  = parseFloat(panel.style.top);
+                    panel.style.left = Math.min(Math.max(curLeft, 4), maxLeft) + 'px';
+                    panel.style.top  = Math.min(Math.max(curTop, 4), maxTop) + 'px';
+                }
+            } catch (e) {}
+        }
+
+        function initDrag() {
+            try {
+                var doc = window.parent.document;
+                var handle = doc.querySelector('#ac-drag-handle');
+                var panel  = doc.querySelector('.st-key-ac_float');
+                if (!handle || !panel) return;
+                if (handle.dataset.dragBound === "1") return;
+                handle.dataset.dragBound = "1";
+
+                var dragging = false;
+                var startX, startY, startLeft, startTop;
+
+                handle.addEventListener('pointerdown', function(e) {
+                    dragging = true;
+                    var rect = panel.getBoundingClientRect();
+                    panel.style.left   = rect.left + 'px';
+                    panel.style.top    = rect.top + 'px';
+                    panel.style.right  = 'auto';
+                    panel.style.bottom = 'auto';
+                    startX = e.clientX;
+                    startY = e.clientY;
+                    startLeft = rect.left;
+                    startTop  = rect.top;
+                    e.preventDefault();
+                });
+
+                doc.addEventListener('pointermove', function(e) {
+                    if (!dragging) return;
+                    var dx = e.clientX - startX;
+                    var dy = e.clientY - startY;
+                    var rect = panel.getBoundingClientRect();
+                    var maxLeft = Math.max(4, window.parent.innerWidth - rect.width - 4);
+                    var maxTop  = Math.max(4, window.parent.innerHeight - rect.height - 4);
+                    var newLeft = Math.min(Math.max(startLeft + dx, 4), maxLeft);
+                    var newTop  = Math.min(Math.max(startTop + dy, 4), maxTop);
+                    panel.style.left = newLeft + 'px';
+                    panel.style.top  = newTop + 'px';
+                });
+
+                doc.addEventListener('pointerup', function() {
+                    dragging = false;
+                });
+            } catch (e) {}
+        }
+
+        resetOrClamp();
+        initDrag();
+        var attempts = 0;
+        var interval = setInterval(function () {
+            attempts++;
+            resetOrClamp();
+            initDrag();
+            if (attempts > 15) clearInterval(interval);
+        }, 300);
+    })();
+    </script>
+    """.replace("__IS_OPEN__", "true" if is_open else "false")
+
+    st.components.v1.html(drag_script, height=0)
+    
+    
+
+# ── Data loading ──────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=1800)
+def load_all_data():
+    def safe_read(path):
+        if os.path.exists(path):
+            try:
+                return pd.read_parquet(path)
+            except Exception:
+                return pd.DataFrame()
+        return pd.DataFrame()
+    merged   = safe_read(MERGED_DATA_PATH)
+    if merged.empty:
+        merged = safe_read(PROCESSED_DATA_PATH)
+    summary  = safe_read(STATION_SUMMARY_PATH)
+    clusters = safe_read("data/processed/station_clusters.parquet")
+    return merged, summary, clusters
+
+
+@st.cache_data(ttl=300)
+def load_aemo_data():
+    def safe_read(path):
+        if os.path.exists(path):
+            try:
+                return pd.read_parquet(path)
+            except Exception:
+                return pd.DataFrame()
+        return pd.DataFrame()
+    return (
+        safe_read("data/processed/aemo_latest.parquet"),
+        safe_read("data/processed/aemo_bom_merged.parquet"),
+        safe_read("data/processed/aemo_history.parquet"),
+    )
+
+
+@st.cache_data(ttl=1800)
+def load_shap_data():
+    def safe_read(path):
+        if os.path.exists(path):
+            try:
+                return pd.read_parquet(path)
+            except Exception:
+                return pd.DataFrame()
+        return pd.DataFrame()
+    return (
+        safe_read("data/processed/shap_results.parquet"),
+        safe_read("data/processed/shap_global_importance.parquet"),
+    )
+    
+@st.cache_data(ttl=3600)
+def load_abs_data():
+    """Load ABS-enriched station summary."""
+    def safe_read(path):
+        if os.path.exists(path):
+            try:
+                return pd.read_parquet(path)
+            except Exception:
+                return pd.DataFrame()
+        return pd.DataFrame()
+    return (
+        safe_read("data/processed/abs_station_matched.parquet"),
+        safe_read(STATION_SUMMARY_PATH),
+    )
+    
+@st.cache_data(ttl=1800)
+def load_bom_history():
+    if os.path.exists(BOM_HISTORY_PATH):
+        try:
+            return pd.read_parquet(BOM_HISTORY_PATH)
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+@st.cache_data(ttl=1800)
+def load_forecast_data():
+    if os.path.exists(FORECAST_OUTPUT_PATH):
+        try:
+            return pd.read_parquet(FORECAST_OUTPUT_PATH)
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+@st.cache_data(ttl=1800)
+def get_station_hazards(station_name: str, _history_all: pd.DataFrame,
+                         _forecast_df: pd.DataFrame) -> dict:
+    return compute_station_hazards(station_name, _history_all, _forecast_df)
+
+
+# ── Load all data ─────────────────────────────────────────────────────────────
+
+df, summary, df_clusters           = load_all_data()
+df_aemo, df_aemo_bom, df_aemo_hist = load_aemo_data()
+df_shap, df_shap_global            = load_shap_data()
+df_abs_matched, df_abs_summary     = load_abs_data()
+df_bom_history                     = load_bom_history()
+
+# ── Pre-compute availability flags ────────────────────────────────────────────
+
+barra2_available = (
+    "barra2_temp_c" in df.columns
+    and df["barra2_temp_c"].notna().any()
+) if not df.empty else False
+
+anomaly_available = (
+    "temp_anomaly_c" in df.columns
+    and df["temp_anomaly_c"].notna().any()
+) if not df.empty else False
+
+shap_available = (
+    "shap_computed" in df.columns
+    and df["shap_computed"].any()
+) if not df.empty else False
+
+ml_available = (
+    "ml_anomaly_flag" in df.columns
+    and df["ml_anomaly_flag"].notna().any()
+) if not df.empty else False
+
+aemo_available = (
+    not df_aemo.empty
+    and "total_demand_mw" in df_aemo.columns
+    and df_aemo["total_demand_mw"].notna().any()
 )
-table_summary.columns = [display_cols.get(c, c) for c in table_summary.columns]
-st.dataframe(table_summary, use_container_width=True, hide_index=True)
+def show_landing_page():
+    """
+    Full-screen stakeholder selection landing page.
+    Shown only when no mode has been selected yet.
+    Replaced by the main dashboard once a mode is chosen.
+    """
+    # Top header card
+    st.markdown(f"""
+    <div class="mode-landing-header">
+        <div class="mode-tag">Select Your Role</div>
+        <div style="font-size:32px; font-weight:800;
+                    color:{T['text_primary']};
+                    letter-spacing:-0.03em; margin-bottom:10px;">
+            Welcome to AusClimate
+        </div>
+        <div style="font-size:14px; color:{T['text_secondary']};
+                    max-width:520px; margin:0 auto; line-height:1.6;">
+            Tell us who you are and we will show you the most relevant
+            features first. You can always switch roles or access all
+            features at any time.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Four role cards
+    c1, c2, c3, c4 = st.columns(4)
+    cols = [c1, c2, c3, c4]
+    modes = ["council", "emergency", "government", "researcher"]
+
+    for col, mode_key in zip(cols, modes):
+        info = STAKEHOLDER_MODES[mode_key]
+        with col:
+            st.markdown(f"""
+            <div class="mode-card">
+                <div class="mode-card-icon">{info['icon']}</div>
+                <div class="mode-card-title">{info['label']}</div>
+                <div class="mode-card-desc">{info['desc']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button(
+                f"Enter as {info['label']}",
+                key=f"mode_{mode_key}",
+                use_container_width=True,
+            ):
+                st.session_state.stakeholder_mode = mode_key
+                st.rerun()
+
+    # Divider and full platform option
+    st.markdown(f"""
+    <div style="text-align:center; margin:24px 0 8px;
+                color:{T['text_muted']}; font-size:11px;
+                letter-spacing:0.08em; text-transform:uppercase;">
+        or
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_mid = st.columns([2, 2, 2])[1]
+    with col_mid:
+        if st.button(
+            "Open Full Platform (All Features)",
+            key="mode_all",
+            use_container_width=True,
+        ):
+            st.session_state.stakeholder_mode = "all"
+            st.rerun()
+
+    # Info footer
+    st.markdown(f"""
+    <div style="text-align:center; margin-top:32px;
+                color:{T['text_muted']}; font-size:11px;">
+        Bureau of Meteorology &nbsp;|&nbsp; BARRA2 Reanalysis &nbsp;|&nbsp;
+        AEMO Energy &nbsp;|&nbsp; Isolation Forest + LOF + SHAP
+        &nbsp;|&nbsp; University of Technology Sydney 2026
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# Show landing page if no mode selected yet
+if st.session_state.stakeholder_mode is None:
+    show_landing_page()
+    st.stop()
+
+MODE     = st.session_state.stakeholder_mode
+MODE_INFO = STAKEHOLDER_MODES.get(MODE, STAKEHOLDER_MODES["all"])
+
+if df.empty:
+    st.warning("No data. Run `python main.py` first.")
+    st.stop()
+
+ALL_TAB_NAMES = [
+    "Overview",
+    "Station Map",
+    "Anomalies",
+    "BARRA2 Comparison",
+    "Data Table",
+    "Energy",
+    "Clustering",
+    "Population Risk",
+    "Forecast",
+]
+
+ordered_tabs = MODE_INFO.get("tabs", ALL_TAB_NAMES)
+for t in ALL_TAB_NAMES:
+    if t not in ordered_tabs:
+        ordered_tabs.append(t)
+
+@st.cache_data
+def load_logo_b64() -> str:
+    logo_path = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
+    with open(logo_path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+try:
+    LOGO_B64 = load_logo_b64()
+except FileNotFoundError:
+    LOGO_B64 = None
+    
+def data_freshness_caption():
+    """
+    Shows when the live data was last refreshed, in Sydney time, so a
+    visitor sees an honest timestamp instead of wondering whether the
+    numbers are stuck or broken.
+    """
+    newest = None
+    for path in (MERGED_DATA_PATH, STATION_SUMMARY_PATH, PROCESSED_DATA_PATH):
+        if os.path.exists(path):
+            mtime = os.path.getmtime(path)
+            if newest is None or mtime > newest:
+                newest = mtime
+    if newest is None:
+        st.caption("Data as of: unavailable")
+        return
+    dt_utc = datetime.fromtimestamp(newest, tz=ZoneInfo("UTC"))
+    dt_syd = dt_utc.astimezone(ZoneInfo("Australia/Sydney"))
+    st.caption(f"Data as of {dt_syd.strftime('%d %b %Y, %I:%M %p')} (Sydney time)")
+
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+
+with st.sidebar:
+
+    logo_tag = f'<img src="data:image/png;base64,{LOGO_B64}" class="aus-sidebar-brand-logo">' if LOGO_B64 else ''
+    st.markdown(f"""
+    <div class="aus-sidebar-brand">
+        {logo_tag}
+        <div class="aus-sidebar-brand-text">
+            <div class="aus-sidebar-brand-title">
+                AusClimate<span class="aus-sidebar-brand-dot"></span>
+            </div>
+            <div class="aus-sidebar-brand-sub">Real-Time Climate Analytics</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    data_freshness_caption()
+
+    # Views navigation
+    st.markdown('<p class="aus-section-label">Views</p>',
+                unsafe_allow_html=True)
+
+    NAV_SLUGS = {
+        "Overview":          "overview",
+        "Station Map":       "station_map",
+        "Anomalies":         "anomalies",
+        "BARRA2 Comparison": "barra2",
+        "Data Table":        "data_table",
+        "Energy":            "energy",
+        "Clustering":        "clustering",
+        "Population Risk":   "population_risk",
+        "Forecast":          "forecast",
+    }
+    NAV_ICONS = {
+        "Overview":          "dashboard",
+        "Station Map":       "location_on",
+        "Anomalies":         "warning",
+        "BARRA2 Comparison": "layers",
+        "Data Table":        "table_chart",
+        "Energy":            "bolt",
+        "Clustering":        "hub",
+        "Population Risk":   "shield",
+        "Forecast":          "cloud",
+    }
+
+    if ("selected_view" not in st.session_state
+            or st.session_state.selected_view not in ordered_tabs):
+        st.session_state.selected_view = MODE_INFO.get("primary", ordered_tabs[0])
+
+    with st.container(key="nav_list"):
+        for tab_name in ordered_tabs:
+            slug = NAV_SLUGS.get(tab_name, tab_name.lower().replace(" ", "_"))
+            icon = NAV_ICONS.get(tab_name, "circle")
+            with st.container(key=f"nav_{slug}"):
+                if st.button(tab_name, key=f"nav_btn_{slug}",
+                             icon=f":material/{icon}:",
+                             use_container_width=True):
+                    st.session_state.selected_view = tab_name
+                    st.rerun()
+
+    active_slug = NAV_SLUGS.get(
+        st.session_state.selected_view,
+        st.session_state.selected_view.lower().replace(" ", "_"),
+    )
+    st.markdown(f"""
+    <style>
+    .st-key-nav_list [data-testid="stVerticalBlock"] {{
+        gap: 2px !important;
+    }}
+    .st-key-nav_list [data-testid="stElementContainer"] {{
+        margin-bottom: 0 !important;
+    }}
+    [class*="st-key-nav_"] button {{
+        background: transparent !important;
+        border: none !important;
+        border-left: 3px solid transparent !important;
+        box-shadow: none !important;
+        color: {T['text_secondary']} !important;
+        text-align: left !important;
+        justify-content: flex-start !important;
+        gap: 10px !important;
+        font-size: 13px !important;
+        font-weight: 500 !important;
+        padding: 7px 10px !important;
+        min-height: unset !important;
+        height: 34px !important;
+        border-radius: 7px !important;
+        transform: none !important;
+    }}
+    [class*="st-key-nav_"] button * {{
+        justify-content: flex-start !important;
+    }}
+    [class*="st-key-nav_"] button > div {{
+        width: 100% !important;
+    }}
+    [class*="st-key-nav_"] button:hover {{
+        background: {T['border']}60 !important;
+        color: {T['text_primary']} !important;
+        transform: none !important;
+    }}
+    .st-key-nav_{active_slug} button {{
+        background: {T['accent']}1F !important;
+        color: {T['text_primary']} !important;
+        border-left: 3px solid {T['accent']} !important;
+        font-weight: 600 !important;
+    }}
+    .st-key-nav_{active_slug} button svg {{
+        color: {T['accent']} !important;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.divider()
+    
+        # Controls
+    st.markdown('<p class="aus-section-label">Controls</p>',
+                unsafe_allow_html=True)
+
+    with st.container(key="controls_group"):
+        btn_label = "Switch to Light Mode" \
+            if st.session_state.theme == "dark" else "Switch to Dark Mode"
+        if st.button(btn_label, use_container_width=True, key="theme_toggle"):
+            st.session_state.theme = (
+                "light" if st.session_state.theme == "dark" else "dark"
+            )
+            st.rerun()
+
+        st.markdown(f"""
+        <div style="background:{T['bg_input']};
+                    border:1px solid {T['border']};
+                    border-radius:8px; padding:8px 12px;
+                    margin:6px 0;">
+            <div style="font-size:9px; font-weight:700;
+                        text-transform:uppercase; letter-spacing:0.1em;
+                        color:{T['text_muted']}; margin-bottom:3px;">
+                Current Role
+            </div>
+            <div style="font-size:13px; font-weight:700;
+                        color:{T['text_primary']};">
+                {MODE_INFO['icon']} {MODE_INFO['label']}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("Change Role", use_container_width=True,
+                     key="change_role"):
+            st.session_state.stakeholder_mode = None
+            st.rerun()
+
+        n_stations  = df["station_name"].nunique() \
+            if not df.empty and "station_name" in df.columns else 0
+        bom_cls     = "aus-badge-live" if n_stations > 0 else "aus-badge-offline"
+        bom_label   = f"LIVE {n_stations:,}" if n_stations > 0 else "OFFLINE"
+        b2_cls      = "aus-badge-live" if barra2_available else "aus-badge-pending"
+        b2_label    = "ACTIVE" if barra2_available else "PENDING"
+        aemo_cls    = "aus-badge-live" if aemo_available else "aus-badge-pending"
+        aemo_label  = "LIVE" if aemo_available else "PENDING"
+
+        st.markdown(f"""
+        <div class="aus-src-wrap" style="margin:6px 0;">
+            <div class="aus-src-row">
+                <span class="aus-src-label">Bureau of Meteorology</span>
+                <span class="aus-badge {bom_cls}">{bom_label}</span>
+            </div>
+            <div class="aus-src-row">
+                <span class="aus-src-label">BARRA2 Reanalysis</span>
+                <span class="aus-badge {b2_cls}">{b2_label}</span>
+            </div>
+            <div class="aus-src-row">
+                <span class="aus-src-label">AEMO Dispatch</span>
+                <span class="aus-badge {aemo_cls}">{aemo_label}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("Refresh BOM Data", use_container_width=True,
+                     key="refresh_btn"):
+            with st.spinner("Refreshing..."):
+                try:
+                    from ingestion.bom import fetch_all_stations, get_station_coords
+                    from pipeline.cleaner import clean_bom_data
+                    from pipeline.feature_eng import compute_station_summary
+                    from pipeline.storage import save_parquet
+                    from pipeline.spatial_join import merge_bom_barra2
+
+                    df_raw   = fetch_all_stations()
+                    df_clean = clean_bom_data(df_raw)
+                    save_parquet(df_clean, PROCESSED_DATA_PATH)
+
+                    b2_cached = pd.DataFrame()
+                    if os.path.exists(BARRA2_CACHE_PATH):
+                        try:
+                            b2_cached = pd.read_parquet(BARRA2_CACHE_PATH)
+                        except Exception:
+                            pass
+
+                    merged = merge_bom_barra2(df_clean, b2_cached)
+                    save_parquet(merged, MERGED_DATA_PATH)
+                    feat = compute_station_summary(merged)
+                    save_parquet(feat, STATION_SUMMARY_PATH)
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Refresh failed: {e}")
+
+    st.markdown("""
+    <style>
+    .st-key-controls_group .stButton > button {
+        padding: 6px 12px !important;
+        font-size: 12px !important;
+    }
+    .st-key-controls_group [data-testid="stVerticalBlock"] {
+        gap: 4px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+
+# ── Operational header ────────────────────────────────────────────────────────
+
+
+now_str = datetime.now().strftime("%d %b %Y  %H:%M AEST")
+
+st.markdown(f"""
+<div class="aus-header">
+    <div class="aus-header-left">
+        <div class="aus-header-icon">
+            {f'<img src="data:image/png;base64,{LOGO_B64}" alt="logo">' if LOGO_B64 else '🌡️'}
+        </div>
+        <div>
+            <div class="aus-header-title">AusClimate</div>
+            <div class="aus-header-sub">
+                Real-Time Australian Climate Analytics Platform
+                &nbsp;&middot;&nbsp; University of Technology Sydney
+            </div>
+        </div>
+    </div>
+    <div class="aus-header-right">
+        <span class="aus-badge {bom_cls}">BOM {n_stations:,} stn</span>
+        <span class="aus-badge {b2_cls}">BARRA2</span>
+        <span class="aus-badge {aemo_cls}">AEMO</span>
+        <span class="aus-timestamp">{now_str}</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Stakeholder quick access panel ────────────────────────────────────────────
+
+if MODE != "all":
+    st.markdown(f"""
+    <div style="background:{T['bg_card']};
+                border:1px solid {T['border']};
+                border-radius:8px; padding:14px 18px;
+                margin-bottom:16px;
+                border-left:3px solid {T['accent']};">
+        <div style="font-size:10px; font-weight:700;
+                    text-transform:uppercase; letter-spacing:0.1em;
+                    color:{T['text_muted']}; margin-bottom:6px;">
+            {MODE_INFO['icon']} {MODE_INFO['label']} - Recommended View
+        </div>
+        <div style="font-size:12px; color:{T['text_secondary']};">
+            Your primary tab is
+            <span style="color:{T['accent_light']};font-weight:600;">
+                {MODE_INFO['primary']}
+            </span>.
+            Tabs are ordered to surface the most relevant data for your role.
+            All features remain accessible.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ── Mode-specific metric highlights ───────────────────────────────────────────
+
+if MODE == "emergency" and ml_available:
+    n_ensemble = int(df["ensemble_anomaly"].sum()) \
+        if "ensemble_anomaly" in df.columns else 0
+    n_severe   = int((df["ml_severity"] == "Severe").sum()) \
+        if "ml_severity" in df.columns else 0
+    risk_color = T["critical"] if n_ensemble > 0 else T["success"]
+    st.markdown(f"""
+    <div style="background:{risk_color}12;
+                border:1px solid {risk_color}40;
+                border-radius:8px; padding:12px 18px;
+                margin-bottom:16px;
+                display:flex; align-items:center; gap:16px;">
+        <div style="font-size:28px; font-weight:800;
+                    color:{risk_color};">{n_ensemble:,}</div>
+        <div>
+            <div style="font-size:12px; font-weight:700;
+                        color:{T['text_primary']};">
+                High-Confidence Ensemble Anomalies
+            </div>
+            <div style="font-size:11px; color:{T['text_secondary']};">
+                {n_severe} severe flags | Flagged by both IF and LOF
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+elif MODE == "council" and not summary.empty:
+    high_risk_count = 0
+    if "vulnerability_index" in summary.columns:
+        vi = pd.to_numeric(summary["vulnerability_index"], errors="coerce")
+        high_risk_count = int((vi > 70).sum())
+    st.markdown(f"""
+    <div style="background:{T['warning']}12;
+                border:1px solid {T['warning']}40;
+                border-radius:8px; padding:12px 18px;
+                margin-bottom:16px;
+                display:flex; align-items:center; gap:16px;">
+        <div style="font-size:28px; font-weight:800;
+                    color:{T['warning']};">{high_risk_count}</div>
+        <div>
+            <div style="font-size:12px; font-weight:700;
+                        color:{T['text_primary']};">
+                Stations with High Vulnerability Index (above 70)
+            </div>
+            <div style="font-size:11px; color:{T['text_secondary']};">
+                Check the Data Table tab sorted by Vulnerability
+                for ward-level planning
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+selected_view = st.session_state.selected_view
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 1 -- OVERVIEW
+# ─────────────────────────────────────────────────────────────────────────────
+if selected_view == "Overview":
+    st.subheader("Live Australian Climate Overview")
+
+    metrics_slot = st.container()
+
+    with st.expander("Filters & chart options", expanded=True):
+        f1, f2 = st.columns(2)
+
+        with f1:
+            all_states = sorted(df["state"].dropna().unique().tolist()) \
+                if "state" in df.columns else []
+
+            selected_states = st.multiselect(
+                "States", options=all_states, default=all_states,
+            )
+
+            df_state = (
+                df[df["state"].isin(selected_states)]
+                if selected_states and "state" in df.columns else df
+            )
+
+            all_stations_list = sorted(
+                df_state["station_name"].dropna().unique().tolist()
+            ) if "station_name" in df_state.columns else []
+
+            selected_stations = st.multiselect(
+                "Stations",
+                options=all_stations_list,
+                default=all_stations_list[:12]
+                if len(all_stations_list) > 12 else all_stations_list,
+            )
+
+        with f2:
+            FEATURE_OPTIONS = {}
+            for col, label in {
+                "temperature_c":  "Temperature (C)",
+                "feels_like_c":   "Feels Like (C)",
+                "humidity_pct":   "Humidity (%)",
+                "wind_speed_kmh": "Wind Speed (km/h)",
+                "gust_kmh":       "Max Gust (km/h)",
+                "pressure_hpa":   "Pressure (hPa)",
+                "dewpoint_c":     "Dewpoint (C)",
+                "rainfall_mm":    "Rainfall (mm)",
+            }.items():
+                if col in df.columns:
+                    FEATURE_OPTIONS[label] = col
+
+            selected_label = st.selectbox("Variable", list(FEATURE_OPTIONS.keys()))
+            selected_col   = FEATURE_OPTIONS[selected_label]
+
+            chart_type = st.radio(
+                "Chart Type",
+                ["Bar", "Horizontal Bar", "Line", "Scatter",
+                 "Box", "Violin", "Radar", "Heatmap", "Bubble"],
+                horizontal=True,
+            )
+
+    if selected_stations:
+        df_filtered = df[df["station_name"].isin(selected_stations)].copy()
+    else:
+        df_filtered = df_state.copy()
+
+    df_filtered[selected_col] = pd.to_numeric(
+        df_filtered[selected_col], errors="coerce"
+    )
+
+    station_mean = (
+        df_filtered.groupby("station_name")[selected_col]
+        .mean().dropna().reset_index()
+        .sort_values(selected_col, ascending=False)
+    )
+    station_mean.columns = ["Station", selected_label]
+
+    vals = pd.to_numeric(df_filtered[selected_col], errors="coerce").dropna()
+    avg_val = vals.mean() if not vals.empty else 0
+    max_val = vals.max()  if not vals.empty else 0
+    min_val = vals.min()  if not vals.empty else 0
+
+    max_station = ""
+    if not vals.empty and "station_name" in df_filtered.columns:
+        idx = pd.to_numeric(
+            df_filtered[selected_col], errors="coerce").idxmax()
+        max_station = df_filtered.loc[idx, "station_name"]
+
+    n_states   = df["state"].nunique() if "state" in df.columns else 0
+    n_records  = len(df)
+
+    with metrics_slot:
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Stations",        f"{n_stations:,}")
+        c2.metric("States",          n_states)
+        c3.metric("Records",         f"{n_records:,}")
+        c4.metric(f"Avg {selected_label}", f"{avg_val:.1f}")
+        c5.metric("Highest",         f"{max_val:.1f}", max_station)
+        c6.metric("Lowest",          f"{min_val:.1f}")
+
+    st.divider()
+
+    # Main chart
+    if station_mean.empty:
+        st.info("Select stations from the sidebar.")
+    else:
+        if chart_type == "Bar":
+            fig = px.bar(
+                station_mean, x="Station", y=selected_label,
+                color=selected_label,
+                color_continuous_scale=COLOUR_SCALE,
+                text_auto=".1f", template=T["plotly_tmpl"],
+            )
+            fig.update_traces(textposition="outside")
+            chart_layout(fig, height=440, xangle=-40)
+
+        elif chart_type == "Horizontal Bar":
+            fig = px.bar(
+                station_mean.sort_values(selected_label),
+                x=selected_label, y="Station",
+                orientation="h",
+                color=selected_label,
+                color_continuous_scale=COLOUR_SCALE,
+                text_auto=".1f", template=T["plotly_tmpl"],
+                height=max(440, len(station_mean) * 24),
+            )
+            chart_layout(
+                fig,
+                height=max(440, len(station_mean) * 24)
+            )
+
+        elif chart_type == "Line":
+            if "timestamp" in df_filtered.columns:
+                fig = px.line(
+                    df_filtered.dropna(
+                        subset=["timestamp", selected_col]
+                    ).sort_values("timestamp"),
+                    x="timestamp", y=selected_col,
+                    color="station_name",
+                    template=T["plotly_tmpl"],
+                    labels={selected_col: selected_label,
+                            "timestamp": "Time",
+                            "station_name": "Station"},
+                )
+            else:
+                fig = px.line(
+                    station_mean, x="Station", y=selected_label,
+                    markers=True, template=T["plotly_tmpl"],
+                )
+            chart_layout(fig, height=440, legend=True)
+
+        elif chart_type == "Scatter":
+            fig = px.scatter(
+                df_filtered.dropna(subset=[selected_col]),
+                x="station_name", y=selected_col,
+                color="state" if "state" in df_filtered.columns else None,
+                opacity=0.5, template=T["plotly_tmpl"],
+                labels={selected_col: selected_label,
+                        "station_name": "Station"},
+            )
+            chart_layout(fig, height=440, xangle=-40)
+
+        elif chart_type == "Box":
+            fig = px.box(
+                df_filtered.dropna(subset=[selected_col]),
+                x="state" if "state" in df_filtered.columns else "station_name",
+                y=selected_col,
+                color="state" if "state" in df_filtered.columns else None,
+                points="outliers", template=T["plotly_tmpl"],
+                labels={selected_col: selected_label},
+            )
+            chart_layout(fig, height=440)
+
+        elif chart_type == "Violin":
+            fig = px.violin(
+                df_filtered.dropna(subset=[selected_col]),
+                x="state" if "state" in df_filtered.columns else "station_name",
+                y=selected_col,
+                color="state" if "state" in df_filtered.columns else None,
+                box=True, template=T["plotly_tmpl"],
+                labels={selected_col: selected_label},
+            )
+            chart_layout(fig, height=440)
+
+        elif chart_type == "Bubble":
+            need = ["temperature_c", "humidity_pct", "wind_speed_kmh"]
+            if all(c in df_filtered.columns for c in need):
+                bub = df_filtered.groupby("station_name").agg({
+                    "temperature_c":  "mean",
+                    "humidity_pct":   "mean",
+                    "wind_speed_kmh": "mean",
+                    "state":          "first",
+                }).reset_index().dropna()
+                for c in need:
+                    bub[c] = pd.to_numeric(bub[c], errors="coerce").round(1)
+                fig = px.scatter(
+                    bub, x="temperature_c", y="humidity_pct",
+                    size="wind_speed_kmh",
+                    color="state" if "state" in bub.columns else "station_name",
+                    hover_name="station_name",
+                    size_max=30, template=T["plotly_tmpl"],
+                    labels={
+                        "temperature_c":  "Temperature (C)",
+                        "humidity_pct":   "Humidity (%)",
+                        "wind_speed_kmh": "Wind Speed (km/h)",
+                    },
+                )
+                chart_layout(fig, height=480, legend=True)
+            else:
+                st.info("Bubble chart needs temperature, humidity, and wind data.")
+                fig = None
+
+        elif chart_type == "Radar":
+            radar_vars = {
+                "temperature_c":  "Temp",
+                "humidity_pct":   "Humidity",
+                "wind_speed_kmh": "Wind",
+                "pressure_hpa":   "Pressure",
+                "feels_like_c":   "Feels Like",
+            }
+            avail_r = {k: v for k, v in radar_vars.items()
+                       if k in df_filtered.columns}
+            gcol    = "state" if "state" in df_filtered.columns else "station_name"
+            fig     = go.Figure()
+            for gv in df_filtered[gcol].dropna().unique():
+                grp   = df_filtered[df_filtered[gcol] == gv]
+                means = [
+                    pd.to_numeric(grp[c], errors="coerce").mean()
+                    for c in avail_r
+                ]
+                fig.add_trace(go.Scatterpolar(
+                    r=means, theta=list(avail_r.values()),
+                    fill="toself", name=str(gv), opacity=0.6,
+                ))
+            fig.update_layout(
+                polar=dict(
+                    bgcolor=T["bg_card"],
+                    radialaxis=dict(
+                        visible=True,
+                        gridcolor=T["grid_color"],
+                        linecolor=T["axis_color"],
+                        tickfont=dict(size=9, color=T["text_secondary"]),
+                    ),
+                    angularaxis=dict(
+                        gridcolor=T["grid_color"],
+                        linecolor=T["axis_color"],
+                        tickfont=dict(size=10, color=T["text_secondary"]),
+                    ),
+                ),
+                paper_bgcolor=T["paper_bg"],
+                font=dict(color=T["text_secondary"], size=11),
+                height=480, showlegend=True,
+                margin=dict(t=44, b=20, l=40, r=40),
+                legend=dict(
+                    bgcolor="rgba(0,0,0,0)",
+                    bordercolor=T["border"], borderwidth=1,
+                    font=dict(size=11, color=T["text_secondary"]),
+                ),
+            )
+
+        elif chart_type == "Heatmap":
+            hmap_vars = {
+                "temperature_c":  "Temp (C)",
+                "humidity_pct":   "Humidity (%)",
+                "wind_speed_kmh": "Wind (km/h)",
+                "pressure_hpa":   "Pressure (hPa)",
+                "feels_like_c":   "Feels Like (C)",
+            }
+            avail_h = {k: v for k, v in hmap_vars.items()
+                       if k in df_filtered.columns}
+            hdf     = df_filtered.groupby("station_name")[
+                list(avail_h.keys())
+            ].mean().reset_index().set_index("station_name")
+            for c in hdf.columns:
+                hdf[c] = pd.to_numeric(hdf[c], errors="coerce")
+            hn = hdf.copy()
+            for c in hn.columns:
+                r = hn[c].max() - hn[c].min()
+                if r > 0:
+                    hn[c] = (hn[c] - hn[c].min()) / r
+            hn.columns = list(avail_h.values())
+            fig = px.imshow(
+                hn.head(40).T,
+                color_continuous_scale=COLOUR_SCALE,
+                aspect="auto",
+                template=T["plotly_tmpl"],
+                labels=dict(x="Station", y="Variable", color="Value"),
+            )
+            chart_layout(fig, height=max(280, len(avail_h) * 60),
+                         xangle=-45)
+
+        else:
+            fig = None
+
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Pinnable tile dashboard
+    st.divider()
+    st.subheader("My Dashboard")
+
+    if "tiles" not in st.session_state:
+        st.session_state.tiles = []
+
+    b1, b2, _ = st.columns([1, 1, 4])
+    with b1:
+        if st.button("Pin Chart", use_container_width=True):
+            if selected_stations:
+                st.session_state.tiles.append({
+                    "stations": selected_stations[:],
+                    "col":      selected_col,
+                    "label":    selected_label,
+                    "chart":    chart_type,
+                })
+                st.toast("Chart pinned.")
+    with b2:
+        if st.button("Clear All", use_container_width=True):
+            st.session_state.tiles = []
+
+    if st.session_state.tiles:
+        tile_cols    = st.columns(2)
+        to_remove    = []
+        for i, tile in enumerate(st.session_state.tiles):
+            with tile_cols[i % 2]:
+                with st.container(border=True):
+                    td = df[df["station_name"].isin(
+                        tile["stations"])].copy()
+                    td[tile["col"]] = pd.to_numeric(
+                        td[tile["col"]], errors="coerce")
+                    ts = (
+                        td.groupby("station_name")[tile["col"]]
+                        .mean().dropna().reset_index()
+                        .sort_values(tile["col"], ascending=False)
+                    )
+                    ts.columns = ["Station", tile["label"]]
+
+                    if tile["chart"] == "Horizontal Bar":
+                        tf = px.bar(
+                            ts.sort_values(tile["label"]),
+                            x=tile["label"], y="Station",
+                            orientation="h",
+                            color=tile["label"],
+                            color_continuous_scale=COLOUR_SCALE,
+                            template=T["plotly_tmpl"],
+                        )
+                    elif (tile["chart"] == "Line"
+                          and "timestamp" in td.columns):
+                        tf = px.line(
+                            td.sort_values("timestamp"),
+                            x="timestamp", y=tile["col"],
+                            color="station_name",
+                            template=T["plotly_tmpl"],
+                        )
+                    elif tile["chart"] == "Scatter":
+                        tf = px.scatter(
+                            td.dropna(subset=[tile["col"]]),
+                            x="station_name", y=tile["col"],
+                            color="state" if "state" in td.columns else None,
+                            opacity=0.5, template=T["plotly_tmpl"],
+                        )
+                    elif tile["chart"] == "Box":
+                        tf = px.box(
+                            td.dropna(subset=[tile["col"]]),
+                            x="state" if "state" in td.columns else "station_name",
+                            y=tile["col"],
+                            template=T["plotly_tmpl"],
+                        )
+                    elif tile["chart"] == "Violin":
+                        tf = px.violin(
+                            td.dropna(subset=[tile["col"]]),
+                            x="state" if "state" in td.columns else "station_name",
+                            y=tile["col"],
+                            box=True, template=T["plotly_tmpl"],
+                        )
+                    else:
+                        tf = px.bar(
+                            ts, x="Station", y=tile["label"],
+                            color=tile["label"],
+                            color_continuous_scale=COLOUR_SCALE,
+                            template=T["plotly_tmpl"],
+                        )
+
+                    chart_layout(
+                        tf, title=tile["label"], height=260,
+                        margin=dict(t=40, b=20, l=20, r=10)
+                    )
+                    st.plotly_chart(tf, use_container_width=True)
+                    if st.button("Remove", key=f"rm_{i}"):
+                        to_remove.append(i)
+
+        for idx in reversed(to_remove):
+            st.session_state.tiles.pop(idx)
+        if to_remove:
+            st.rerun()
+    else:
+        st.caption("Select variable and chart type then click Pin Chart.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 2 -- STATION MAP
+# ─────────────────────────────────────────────────────────────────────────────
+if selected_view == "Station Map":
+    st.subheader("National Station Coverage")
+
+    if "latitude" not in df.columns or "longitude" not in df.columns:
+        st.info("No coordinate data available.")
+    else:
+        map_df = (
+            df.groupby("station_name").agg({
+                "latitude":      "first",
+                "longitude":     "first",
+                "state":         "first",
+                "temperature_c": "mean",
+                "humidity_pct":  "mean",
+            }).reset_index()
+        )
+        for c in ["latitude", "longitude", "temperature_c", "humidity_pct"]:
+            map_df[c] = pd.to_numeric(map_df[c], errors="coerce")
+        map_df = map_df.dropna(subset=["latitude", "longitude"])
+
+        map_col_opts = {}
+        for col, lbl in {
+            "temperature_c": "Temperature (C)",
+            "humidity_pct":  "Humidity (%)",
+        }.items():
+            if col in map_df.columns:
+                map_col_opts[lbl] = col
+
+        map_colour_label = st.selectbox(
+            "Colour by", list(map_col_opts.keys()), key="map_col"
+        )
+        map_colour_col = map_col_opts[map_colour_label]
+
+        fig_map = px.scatter_mapbox(
+            map_df,
+            lat="latitude", lon="longitude",
+            color=map_colour_col,
+            color_continuous_scale=COLOUR_SCALE,
+            size_max=22,
+            hover_name="station_name",
+            hover_data={
+                "state":         True,
+                "temperature_c": ":.1f",
+                "humidity_pct":  ":.1f",
+                "latitude":      False,
+                "longitude":     False,
+            },
+            mapbox_style=T["mapbox_style"],
+            zoom=3.5,
+            center={"lat": -26, "lon": 134},
+            height=560,
+            labels={map_colour_col: map_colour_label},
+        )
+        chart_layout(fig_map, margin=dict(t=20, b=0, l=0, r=0))
+        st.plotly_chart(fig_map, use_container_width=True)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Stations per State")
+            sc = (df.groupby("state")["station_name"]
+                    .nunique().reset_index())
+            sc.columns = ["State", "Stations"]
+            fig_sc = px.bar(
+                sc.sort_values("Stations", ascending=False),
+                x="State", y="Stations",
+                color="Stations",
+                color_continuous_scale=COLOUR_SCALE_BLUE,
+                text_auto=True, template=T["plotly_tmpl"],
+            )
+            chart_layout(fig_sc, height=300)
+            st.plotly_chart(fig_sc, use_container_width=True)
+
+        with c2:
+            st.subheader("Temperature Distribution")
+            temp_vals = pd.to_numeric(
+                df["temperature_c"], errors="coerce"
+            ).dropna()
+            fig_hist = px.histogram(
+                x=temp_vals, nbins=40,
+                template=T["plotly_tmpl"],
+                color_discrete_sequence=[T["accent"]],
+                labels={"x": "Temperature (C)", "count": "Observations"},
+            )
+            chart_layout(fig_hist, height=300)
+            st.plotly_chart(fig_hist, use_container_width=True)
+            
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 3 -- ANOMALIES
+# ─────────────────────────────────────────────────────────────────────────────
+if selected_view == "Anomalies":
+
+    feat_labels = {
+        "temperature_c":  "Temperature",
+        "feels_like_c":   "Apparent Temp",
+        "humidity_pct":   "Humidity",
+        "wind_speed_kmh": "Wind Speed",
+        "pressure_hpa":   "Pressure",
+    }
+    feat_units = {
+        "temperature_c":  "C",    "feels_like_c":   "C",
+        "humidity_pct":   "%",    "wind_speed_kmh": "km/h",
+        "pressure_hpa":   "hPa",
+    }
+
+    # Quick status row above sub-tabs
+    if ml_available:
+        n_total    = len(df)
+        n_anomaly  = int(df["ml_anomaly_flag"].sum())
+        n_severe   = int((df["ml_severity"] == "Severe").sum()) \
+            if "ml_severity" in df.columns else 0
+        n_ensemble = int(df["ensemble_anomaly"].sum()) \
+            if "ensemble_anomaly" in df.columns else 0
+        lof_available = (
+            "lof_anomaly_flag" in df.columns
+            and df["lof_anomaly_flag"].notna().any()
+        )
+        n_lof = int(df["lof_anomaly_flag"].sum()) \
+            if lof_available else 0
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Scored",      f"{n_total:,}")
+        c2.metric("IF Anomalies", f"{n_anomaly:,}")
+        c3.metric("LOF Anomalies", f"{n_lof:,}")
+        c4.metric("Consensus",    f"{n_ensemble:,}")
+        c5.metric("Severe",       n_severe)
+    else:
+        lof_available = False
+
+    st.divider()
+
+    # ── Sub-tabs ──────────────────────────────────────────────────
+    anom_sub1, anom_sub2, anom_sub3 = st.tabs([
+        "Detection and Risk Map",
+        "SHAP Explainability",
+        "LOF and Ensemble Voting",
+    ])
+
+    # ─────────────────────────────────────────────────────────────
+    # SUB-TAB 1 -- DETECTION AND RISK MAP
+    # ─────────────────────────────────────────────────────────────
+    with anom_sub1:
+        st.subheader("Climate Anomaly Detection")
+
+        if ml_available:
+            st.success(
+                "Isolation Forest active - "
+                "anomalies detected across 5 climate variables."
+            )
+
+            ml_df = df[df["ml_anomaly_flag"] == True].copy()
+
+            col_sev, col_drv = st.columns(2)
+            with col_sev:
+                if "ml_severity" in df.columns:
+                    sev = df["ml_severity"].value_counts().reset_index()
+                    sev.columns = ["Severity", "Count"]
+                    sev_colours = {
+                        "Severe":  T["critical"],
+                        "Moderate": T["warning"],
+                        "Mild":    "#A0A020",
+                        "Normal":  T["success"],
+                        "Unknown": T["text_muted"],
+                    }
+                    fig_sev = px.bar(
+                        sev, x="Severity", y="Count",
+                        color="Severity",
+                        color_discrete_map=sev_colours,
+                        template=T["plotly_tmpl"],
+                        text_auto=True,
+                    )
+                    chart_layout(fig_sev,
+                                 title="Severity Distribution",
+                                 height=320)
+                    fig_sev.update_layout(showlegend=False)
+                    st.plotly_chart(fig_sev, use_container_width=True)
+
+            with col_drv:
+                drv_col = "shap_top_driver" \
+                    if shap_available else "ml_primary_driver"
+                if drv_col in df.columns:
+                    drvs = (
+                        ml_df[drv_col]
+                        .replace("", np.nan).dropna()
+                        .value_counts().reset_index()
+                    )
+                    drvs.columns = ["Driver", "Count"]
+                    if not drvs.empty:
+                        fig_drv = px.pie(
+                            drvs, names="Driver", values="Count",
+                            template=T["plotly_tmpl"],
+                            color_discrete_sequence=
+                            px.colors.qualitative.Set2,
+                        )
+                        chart_layout(
+                            fig_drv,
+                            title="Primary Driver" +
+                                  (" (SHAP)" if shap_available
+                                   else " (Phase 2)"),
+                            height=320,
+                            margin=dict(t=44, b=20, l=20, r=20),
+                        )
+                        st.plotly_chart(
+                            fig_drv, use_container_width=True
+                        )
+
+            st.divider()
+            st.subheader("Station Risk Map")
+
+            try:
+                from anomaly.detector import compute_station_anomaly_summary
+                station_risk = compute_station_anomaly_summary(df)
+
+                if not station_risk.empty:
+                    has_coords = (
+                        "latitude" in station_risk.columns
+                        and station_risk["latitude"].notna().any()
+                    )
+                    if not has_coords:
+                        stn_list_path = \
+                            "data/processed/station_list.parquet"
+                        if os.path.exists(stn_list_path):
+                            stn_coords = pd.read_parquet(stn_list_path)
+                            if "lat" in stn_coords.columns:
+                                stn_coords = stn_coords.rename(
+                                    columns={"lat": "latitude",
+                                             "lon": "longitude"}
+                                )
+                            station_risk = station_risk.merge(
+                                stn_coords[["station_name",
+                                            "latitude", "longitude"]],
+                                on="station_name", how="left",
+                            )
+                        elif "latitude" in df.columns:
+                            coords = (
+                                df.groupby("station_name")[
+                                    ["latitude", "longitude"]
+                                ].first().reset_index()
+                            )
+                            station_risk = station_risk.merge(
+                                coords, on="station_name", how="left"
+                            )
+
+                risk_colours = {
+                    "High":   T["critical"],
+                    "Medium": T["warning"],
+                    "Low":    "#A0A020",
+                    "Normal": T["success"],
+                }
+                map_risk = station_risk.dropna(
+                    subset=["latitude", "longitude"]
+                )
+                if not map_risk.empty:
+                    fig_risk = px.scatter_mapbox(
+                        map_risk,
+                        lat="latitude", lon="longitude",
+                        color="station_risk",
+                        color_discrete_map=risk_colours,
+                        size="if_anomaly_count",
+                        size_max=22,
+                        hover_name="station_name",
+                        hover_data={
+                            "state":               True,
+                            "if_anomaly_count":    True,
+                            "if_anomaly_rate_pct": True,
+                            "station_risk":        True,
+                            "latitude":            False,
+                            "longitude":           False,
+                        },
+                        zoom=3.4,
+                        center={"lat": -26, "lon": 134},
+                        height=560,
+                    )
+                    map_layout(
+                        fig_risk, T,
+                        title="Station Risk Map - "
+                              "dot size = anomaly count",
+                        height=560, legend=True,
+                    )
+                    fig_risk.update_layout(
+                        legend=dict(
+                            title=dict(
+                                text="Risk Level",
+                                font=dict(size=11,
+                                          color=T["text_secondary"]),
+                            ),
+                        )
+                    )
+                    st.plotly_chart(fig_risk, use_container_width=True)
+                else:
+                    st.info("No coordinate data for risk map.")
+
+                risk_rename = {
+                    "station_name":        "Station",
+                    "state":               "State",
+                    "total_observations":  "Total Obs",
+                    "if_anomaly_count":    "IF Anomalies",
+                    "if_anomaly_rate_pct": "IF Rate (%)",
+                    "lof_anomaly_count":   "LOF Anomalies",
+                    "ensemble_count":      "Consensus",
+                    "avg_if_score":        "Avg Score",
+                    "primary_driver":      "Driver",
+                    "station_risk":        "Risk",
+                }
+                avail_r = {k: v for k, v in risk_rename.items()
+                           if k in station_risk.columns}
+                disp_r  = station_risk[list(avail_r.keys())].copy()
+                disp_r.rename(columns=avail_r, inplace=True)
+                st.dataframe(
+                    disp_r.sort_values("IF Anomalies", ascending=False)
+                    if "IF Anomalies" in disp_r.columns else disp_r,
+                    use_container_width=True, hide_index=True,
+                )
+            except Exception as e:
+                st.error(f"Risk map error: {e}")
+
+            st.divider()
+            st.subheader("Most Anomalous Observations")
+            detail_cols = [c for c in [
+                "station_name", "state", "temperature_c",
+                "feels_like_c", "humidity_pct", "wind_speed_kmh",
+                "ml_anomaly_score", "ml_severity", "ml_primary_driver",
+            ] if c in df.columns]
+            top_anom = (
+                ml_df[detail_cols]
+                .sort_values("ml_anomaly_score").head(20)
+                .rename(columns={
+                    "station_name":      "Station",
+                    "state":             "State",
+                    "temperature_c":     "Temp (C)",
+                    "feels_like_c":      "Feels Like (C)",
+                    "humidity_pct":      "Humidity (%)",
+                    "wind_speed_kmh":    "Wind (km/h)",
+                    "ml_anomaly_score":  "Score",
+                    "ml_severity":       "Severity",
+                    "ml_primary_driver": "Driver",
+                })
+            )
+            st.dataframe(top_anom, use_container_width=True,
+                         hide_index=True)
+
+        elif anomaly_available:
+            st.info("Showing BARRA2-based anomalies.")
+            anom_df = (
+                df.groupby("station_name")["temp_anomaly_c"]
+                .mean().dropna().reset_index()
+                .sort_values("temp_anomaly_c", ascending=False)
+            )
+            fig_a = px.bar(
+                anom_df.head(40),
+                x="station_name", y="temp_anomaly_c",
+                color="temp_anomaly_c",
+                color_continuous_scale=COLOUR_SCALE_DIV,
+                color_continuous_midpoint=0,
+                template=T["plotly_tmpl"],
+                labels={"temp_anomaly_c": "Anomaly (C)",
+                        "station_name":   "Station"},
+            )
+            fig_a.add_hline(y=0, line_color=T["border"], opacity=0.5)
+            chart_layout(
+                fig_a,
+                title="Temperature Anomaly vs BARRA2 Baseline",
+                height=420, xangle=-45,
+            )
+            st.plotly_chart(fig_a, use_container_width=True)
+
+        else:
+            st.info(
+                "Run `python main.py` to enable ML detection."
+            )
+            if "temperature_c" in df.columns:
+                temps  = pd.to_numeric(df["temperature_c"], errors="coerce")
+                t_mean = temps.mean()
+                t_std  = temps.std()
+                odf    = (
+                    df.groupby("station_name")
+                    .agg(temperature_c=("temperature_c", "mean"),
+                         state=("state", "first"))
+                    .reset_index()
+                )
+                odf["temperature_c"] = pd.to_numeric(
+                    odf["temperature_c"], errors="coerce"
+                )
+                odf["z_score"] = (
+                    (odf["temperature_c"] - t_mean) / t_std
+                ).round(2)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Hot outliers",
+                          int((odf["z_score"] >  2).sum()))
+                c2.metric("Normal range",
+                          int((odf["z_score"].abs() <= 2).sum()))
+                c3.metric("Cold outliers",
+                          int((odf["z_score"] < -2).sum()))
+                fig_z = px.bar(
+                    odf.sort_values("z_score", ascending=False).head(50),
+                    x="station_name", y="z_score",
+                    color="z_score",
+                    color_continuous_scale=COLOUR_SCALE_DIV,
+                    color_continuous_midpoint=0,
+                    text_auto=".1f", template=T["plotly_tmpl"],
+                )
+                chart_layout(fig_z,
+                             title="Temperature Z-Scores (top 50)",
+                             height=440, xangle=-45)
+                st.plotly_chart(fig_z, use_container_width=True)
+
+    # ─────────────────────────────────────────────────────────────
+    # SUB-TAB 2 -- SHAP EXPLAINABILITY
+    # ─────────────────────────────────────────────────────────────
+    with anom_sub2:
+        st.subheader("SHAP Explainability - Phase 3")
+        st.caption(
+            "Shapley values show exactly how much each climate variable "
+            "contributed to each anomaly score. Values are additive and "
+            "sum to the total anomaly score. "
+            "More negative = stronger push toward anomalous."
+        )
+
+        shap_feat_cols = [
+            c for c in df.columns
+            if c.startswith("shap_")
+            and c not in ["shap_top_driver", "shap_top_driver_val",
+                          "shap_explanation", "shap_computed"]
+        ]
+
+        if not shap_available:
+            st.info(
+                "SHAP Phase 3 not yet computed. "
+                "Run: python main.py -retrain"
+            )
+            if ml_available:
+                st.markdown("""
+                **What SHAP adds over Phase 2:**
+                - Precise attribution: exactly how much each variable
+                  contributed to every anomaly score
+                - Waterfall chart per station showing red bars (anomaly
+                  drivers) and green bars (normalising variables)
+                - Plain English explanation per anomaly
+                - Global feature importance across all anomalies nationally
+                """)
+        else:
+            # Global importance
+            if not df_shap_global.empty:
+                st.subheader("Global Feature Importance")
+                st.caption(
+                    "Mean absolute SHAP value across all anomalies - "
+                    "shows which variables drive anomalies nationally."
+                )
+                fig_gi = px.bar(
+                    df_shap_global,
+                    x="mean_abs_shap", y="label",
+                    orientation="h",
+                    color="mean_abs_shap",
+                    color_continuous_scale=COLOUR_SCALE_SEQ,
+                    text=df_shap_global[
+                        "mean_abs_shap"
+                    ].round(4).astype(str),
+                    template=T["plotly_tmpl"],
+                    labels={"mean_abs_shap": "Mean |SHAP|",
+                            "label":         "Variable"},
+                )
+                fig_gi.update_traces(textposition="outside")
+                chart_layout(fig_gi, height=300,
+                             margin=dict(t=30, b=20, l=120, r=60))
+                st.plotly_chart(fig_gi, use_container_width=True)
+
+            # Beeswarm scatter
+            if shap_feat_cols and "ml_anomaly_flag" in df.columns:
+                st.divider()
+                st.subheader("SHAP Distribution - All Anomalies")
+                st.caption(
+                    "Each dot is one anomalous observation. "
+                    "Left of zero = pushed toward anomalous. "
+                    "Right of zero = pulled toward normal."
+                )
+                anom_df_shap = df[df["ml_anomaly_flag"] == True].copy()
+                shap_long_rows = []
+                for shap_col in shap_feat_cols:
+                    feat  = shap_col.replace("shap_", "")
+                    label = feat_labels.get(feat, feat)
+                    if (shap_col in anom_df_shap.columns
+                            and feat in anom_df_shap.columns):
+                        sub = anom_df_shap[[
+                            shap_col, feat, "station_name"
+                        ]].dropna().copy()
+                        sub = sub.rename(columns={
+                            shap_col: "shap_value",
+                            feat:     "feature_value",
+                        })
+                        sub["feature"] = label
+                        shap_long_rows.append(sub)
+
+                if shap_long_rows:
+                    shap_long = pd.concat(shap_long_rows, ignore_index=True)
+                    fig_bee = px.scatter(
+                        shap_long,
+                        x="shap_value", y="feature",
+                        color="feature_value",
+                        color_continuous_scale=COLOUR_SCALE_DIV,
+                        opacity=0.4, height=360,
+                        template=T["plotly_tmpl"],
+                        hover_data={
+                            "station_name":  True,
+                            "shap_value":    ":.5f",
+                            "feature_value": ":.2f",
+                            "feature":       False,
+                        },
+                        labels={
+                            "shap_value":    "SHAP Contribution",
+                            "feature":       "Variable",
+                            "feature_value": "Actual Value",
+                        },
+                    )
+                    fig_bee.add_vline(
+                        x=0, line_dash="solid",
+                        line_color=T["border"], opacity=0.5,
+                    )
+                    chart_layout(fig_bee, height=360)
+                    st.plotly_chart(fig_bee, use_container_width=True)
+
+            # Waterfall
+            st.divider()
+            st.subheader("Station Waterfall Chart")
+            st.caption(
+                "Select a station to see exactly how each variable "
+                "contributed to its anomaly score. "
+                "Red = pushed toward anomalous, green = pulled toward normal."
+            )
+
+            anom_stns = df[
+                (df["ml_anomaly_flag"] == True) &
+                (df.get("shap_computed",
+                        pd.Series(False, index=df.index)))
+            ]["station_name"].dropna().unique().tolist() \
+                if "shap_computed" in df.columns else []
+
+            if anom_stns:
+                sel_stn  = st.selectbox(
+                    "Select anomalous station",
+                    options=sorted(anom_stns),
+                    key="shap_stn_sub",
+                )
+                stn_rows = df[
+                    (df["station_name"] == sel_stn) &
+                    (df["ml_anomaly_flag"] == True)
+                ].sort_values("ml_anomaly_score")
+
+                if not stn_rows.empty:
+                    top_row = stn_rows.iloc[0]
+
+                    if not df_shap.empty:
+                        shap_match = pd.DataFrame()
+                        if "station_name" in df_shap.columns:
+                            shap_match = df_shap[
+                                df_shap["station_name"] == sel_stn
+                            ]
+                        if shap_match.empty:
+                            shap_match = df_shap[
+                                df_shap.index.isin(stn_rows.index)
+                            ]
+                        if not shap_match.empty:
+                            top_row = top_row.copy()
+                            for sc in shap_feat_cols:
+                                if sc in shap_match.columns:
+                                    val = shap_match[sc].dropna()
+                                    if not val.empty:
+                                        top_row[sc] = val.iloc[0]
+
+                    wf_l, wf_v = [], []
+                    for sc in shap_feat_cols:
+                        feat  = sc.replace("shap_", "")
+                        label = feat_labels.get(feat, feat)
+                        unit  = feat_units.get(feat, "")
+                        if sc not in top_row.index:
+                            continue
+                        sv = top_row[sc]
+                        try:
+                            sv = float(sv)
+                            if np.isnan(sv):
+                                continue
+                        except (TypeError, ValueError):
+                            continue
+                        av = float(top_row[feat]) \
+                            if feat in top_row.index else np.nan
+                        try:
+                            avs = f"{av:.1f}{unit}" \
+                                if not np.isnan(av) else "N/A"
+                        except (TypeError, ValueError):
+                            avs = "N/A"
+                        wf_l.append(f"{label} ({avs})")
+                        wf_v.append(sv)
+
+                    if wf_v:
+                        pairs  = sorted(zip(wf_l, wf_v),
+                                        key=lambda x: x[1])
+                        wl     = [p[0] for p in pairs]
+                        wv     = [p[1] for p in pairs]
+                        colors = [T["critical"] if v < 0
+                                  else T["success"] for v in wv]
+                        score  = float(
+                            top_row.get("ml_anomaly_score", 0)
+                        )
+                        fig_wf = go.Figure(go.Bar(
+                            x=wl, y=wv,
+                            marker_color=colors,
+                            text=[f"{v:+.4f}" for v in wv],
+                            textposition="outside",
+                            textfont=dict(size=10,
+                                          color=T["text_secondary"]),
+                        ))
+                        fig_wf.add_hline(y=0, line_color=T["border"],
+                                         opacity=0.5)
+                        chart_layout(
+                            fig_wf,
+                            title=f"SHAP Waterfall - {sel_stn} "
+                                  f"(score: {score:.4f})",
+                            height=400,
+                        )
+                        st.plotly_chart(fig_wf,
+                                        use_container_width=True)
+                        expl = top_row.get("shap_explanation", "")
+                        if expl and str(expl) not in ("", "nan"):
+                            st.info(f"Explanation: {expl}")
+                    else:
+                        st.info(
+                            "SHAP values not available for this station."
+                        )
+            else:
+                st.info(
+                    "No SHAP-computed anomalies found. "
+                    "Run: python main.py -retrain"
+                )
+
+            # SHAP explanation table
+            st.divider()
+            st.subheader("Top 20 Anomalies with SHAP Explanations")
+            expl_cols = [c for c in [
+                "station_name", "state",
+                "temperature_c", "humidity_pct",
+                "ml_anomaly_score", "ml_severity",
+                "shap_top_driver", "shap_explanation",
+            ] if c in df.columns]
+            if "shap_computed" in df.columns:
+                expl_df = (
+                    df[df["shap_computed"] == True][expl_cols]
+                    .sort_values("ml_anomaly_score").head(20)
+                    .rename(columns={
+                        "station_name":     "Station",
+                        "state":            "State",
+                        "temperature_c":    "Temp (C)",
+                        "humidity_pct":     "Humidity (%)",
+                        "ml_anomaly_score": "Score",
+                        "ml_severity":      "Severity",
+                        "shap_top_driver":  "Top Driver",
+                        "shap_explanation": "SHAP Explanation",
+                    })
+                )
+                st.dataframe(expl_df, use_container_width=True,
+                             hide_index=True)
+                st.caption(
+                    "Score: more negative = more anomalous. "
+                    "Red bars push toward anomalous, "
+                    "green bars pull toward normal."
+                )
+
+    # ─────────────────────────────────────────────────────────────
+    # SUB-TAB 3 -- LOF AND ENSEMBLE VOTING
+    # ─────────────────────────────────────────────────────────────
+    with anom_sub3:
+        st.subheader("Local Outlier Factor and Ensemble Voting")
+        st.caption(
+            "LOF detects anomalies based on local neighbourhood density -- "
+            "it catches patterns Isolation Forest can miss. "
+            "Ensemble voting flags observations only when BOTH models agree, "
+            "dramatically reducing false positives."
+        )
+
+        lof_available = (
+            "lof_anomaly_flag" in df.columns
+            and df["lof_anomaly_flag"].notna().any()
+        )
+        ensemble_available = (
+            "ensemble_anomaly" in df.columns
+            and df["ensemble_anomaly"].any()
+        )
+
+        if not lof_available:
+            st.info(
+                "LOF and Ensemble results not yet available. "
+                "Run: python main.py -retrain"
+            )
+            st.markdown("""
+            **What LOF adds:**
+            - Detects anomalies based on local density rather than
+              global isolation
+            - Catches readings that are locally unusual but not
+              globally extreme
+            - Particularly good at microclimatic anomalies
+
+            **What Ensemble Voting adds:**
+            - Flags only observations where IF AND LOF independently agree
+            - Reduces false positive rate from ~5% to ~0.25%
+            - Gives emergency services and councils high-confidence alerts
+            """)
+        else:
+            n_if_flags  = int(df["ml_anomaly_flag"].sum())
+            n_lof_flags = int(df["lof_anomaly_flag"].sum())
+            n_ensemble  = int(df["ensemble_anomaly"].sum()) \
+                if ensemble_available else 0
+            n_if_only   = int(df.get(
+                "if_only", pd.Series(False, index=df.index)
+            ).sum())
+            n_lof_only  = int(df.get(
+                "lof_only", pd.Series(False, index=df.index)
+            ).sum())
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("IF Anomalies",     f"{n_if_flags:,}")
+            c2.metric("LOF Anomalies",    f"{n_lof_flags:,}")
+            c3.metric("Consensus (Both)", f"{n_ensemble:,}",
+                      "High confidence")
+            c4.metric("Agreement Rate",
+                      f"{n_ensemble/max(n_if_flags,1)*100:.0f}%")
+
+            st.divider()
+
+            col_venn, col_detail = st.columns([1, 1])
+            with col_venn:
+                comparison_data = pd.DataFrame({
+                    "Category": [
+                        "IF only (not LOF)",
+                        "LOF only (not IF)",
+                        "Both agree (Ensemble)",
+                    ],
+                    "Count": [n_if_only, n_lof_only, n_ensemble],
+                })
+                fig_venn = px.bar(
+                    comparison_data, x="Category", y="Count",
+                    color="Category",
+                    color_discrete_sequence=[
+                        T["warning"], T["accent"], T["critical"]
+                    ],
+                    text_auto=True, template=T["plotly_tmpl"],
+                    title="IF vs LOF Breakdown",
+                )
+                chart_layout(fig_venn, height=340, xangle=-10)
+                fig_venn.update_layout(showlegend=False)
+                st.plotly_chart(fig_venn, use_container_width=True)
+
+            with col_detail:
+                st.markdown(f"""
+                <div style="padding:18px;
+                            background:{T['bg_card']};
+                            border:1px solid {T['border']};
+                            border-radius:8px; margin-top:4px;
+                            height:100%;">
+                    <p style="color:{T['text_secondary']};
+                              font-size:10px; font-weight:700;
+                              text-transform:uppercase;
+                              letter-spacing:0.1em;
+                              margin-bottom:14px;">
+                        Interpretation Guide
+                    </p>
+                    <p style="color:{T['text_primary']};
+                              font-size:12px; line-height:1.6;
+                              margin-bottom:12px;">
+                        <span style="color:{T['critical']};
+                                     font-weight:700;">
+                            Ensemble ({n_ensemble:,})
+                        </span><br>
+                        Both IF and LOF flagged this observation
+                        independently. Highest confidence. False
+                        positive rate approximately 0.25%.
+                    </p>
+                    <p style="color:{T['text_primary']};
+                              font-size:12px; line-height:1.6;
+                              margin-bottom:12px;">
+                        <span style="color:{T['warning']};
+                                     font-weight:700;">
+                            IF only ({n_if_only:,})
+                        </span><br>
+                        Globally unusual but locally similar to
+                        neighbours. Worth monitoring, not acting on.
+                    </p>
+                    <p style="color:{T['text_primary']};
+                              font-size:12px; line-height:1.6;">
+                        <span style="color:{T['accent_light']};
+                                     font-weight:700;">
+                            LOF only ({n_lof_only:,})
+                        </span><br>
+                        Locally isolated but not globally extreme.
+                        Often microclimatic anomalies.
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Ensemble map
+            if ensemble_available:
+                st.divider()
+                st.subheader("High-Confidence Ensemble Anomaly Map")
+                ens_df = df[df["ensemble_anomaly"] == True].copy()
+
+                if not ens_df.empty and "latitude" in ens_df.columns:
+                    ens_map = (
+                        ens_df.groupby("station_name").agg({
+                            "latitude":          "first",
+                            "longitude":         "first",
+                            "state":             "first",
+                            "ensemble_anomaly":  "sum",
+                            "ml_anomaly_score":  "mean",
+                            "ml_primary_driver": lambda x:
+                                x.mode().iloc[0]
+                                if not x.mode().empty else "",
+                        }).reset_index()
+                        .dropna(subset=["latitude", "longitude"])
+                    )
+                    if not ens_map.empty:
+                        fig_ens_map = px.scatter_mapbox(
+                            ens_map,
+                            lat="latitude", lon="longitude",
+                            color="ml_anomaly_score",
+                            color_continuous_scale=COLOUR_SCALE_DIV,
+                            size="ensemble_anomaly",
+                            size_max=22,
+                            hover_name="station_name",
+                            hover_data={
+                                "state":             True,
+                                "ensemble_anomaly":  True,
+                                "ml_anomaly_score":  ":.4f",
+                                "ml_primary_driver": True,
+                                "latitude":          False,
+                                "longitude":         False,
+                            },
+                            zoom=3.4,
+                            center={"lat": -26, "lon": 134},
+                            height=520,
+                        )
+                        map_layout(
+                            fig_ens_map, T,
+                            title="Ensemble Anomalies - "
+                                  "dot size = count, colour = IF score",
+                            height=520,
+                        )
+                        fig_ens_map.update_layout(
+                            coloraxis=dict(
+                                colorbar=dict(
+                                    title=dict(
+                                        text="IF Score",
+                                        font=dict(
+                                            size=11,
+                                            color=T["text_secondary"],
+                                        ),
+                                    ),
+                                    tickfont=dict(
+                                        size=10,
+                                        color=T["text_secondary"],
+                                    ),
+                                )
+                            )
+                        )
+                        st.plotly_chart(
+                            fig_ens_map, use_container_width=True
+                        )
+
+                # Ensemble detail table
+                st.subheader("Ensemble Anomaly Detail")
+                ens_cols = [c for c in [
+                    "station_name", "state",
+                    "temperature_c", "humidity_pct",
+                    "ml_anomaly_score", "lof_anomaly_score",
+                    "ensemble_severity", "ml_primary_driver",
+                ] if c in ens_df.columns]
+                ens_display = (
+                    ens_df[ens_cols]
+                    .sort_values("ml_anomaly_score").head(20)
+                    .rename(columns={
+                        "station_name":      "Station",
+                        "state":             "State",
+                        "temperature_c":     "Temp (C)",
+                        "humidity_pct":      "Humidity (%)",
+                        "ml_anomaly_score":  "IF Score",
+                        "lof_anomaly_score": "LOF Score",
+                        "ensemble_severity": "Severity",
+                        "ml_primary_driver": "Driver",
+                    })
+                )
+                st.dataframe(ens_display, use_container_width=True,
+                             hide_index=True)
+                st.caption(
+                    "IF Score: more negative = more isolated. "
+                    "LOF Score: more negative = lower local density. "
+                    "Both scores negative = highest confidence anomaly."
+                )
+
+    
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 4 -- BARRA2 COMPARISON
+# ─────────────────────────────────────────────────────────────────────────────
+if selected_view == "BARRA2 Comparison":
+    st.subheader("BOM Live vs BARRA2 Historical Baseline")
+
+    if not barra2_available:
+        st.info(
+            "BARRA2 historical baseline is not yet loaded. "
+            "Run `python main.py` to fetch it."
+        )
+        st.markdown("""
+        **When BARRA2 loads this tab shows:**
+        - BOM current vs BARRA2 historical mean per variable
+        - Stations above and below historical norms
+        - Difference charts per region
+        """)
+        if not summary.empty:
+            disp_map = {
+                "station_name":       "Station",
+                "state":              "State",
+                "mean_temperature_c": "Avg Temp (C)",
+                "max_temperature_c":  "Max Temp (C)",
+                "mean_humidity_pct":  "Avg Humidity (%)",
+                "mean_wind_speed_kmh":"Avg Wind (km/h)",
+                "record_count":       "Records",
+            }
+            avail = {k: v for k, v in disp_map.items()
+                     if k in summary.columns}
+            disp  = summary[list(avail.keys())].copy()
+            disp.rename(columns=avail, inplace=True)
+            for col in disp.select_dtypes("float").columns:
+                disp[col] = disp[col].round(1)
+            st.dataframe(
+                disp.sort_values("Avg Temp (C)", ascending=False)
+                if "Avg Temp (C)" in disp.columns else disp,
+                use_container_width=True, hide_index=True,
+            )
+    else:
+        barra2_cols = [c for c in df.columns if c.startswith("barra2_")]
+
+        pair_opts = {}
+        if "temperature_c" in df.columns and "barra2_temp_c" in df.columns:
+            pair_opts["Temperature (C)"] = ("temperature_c", "barra2_temp_c")
+        if "humidity_pct" in df.columns and "barra2_humidity_pct" in df.columns:
+            pair_opts["Humidity (%)"] = ("humidity_pct", "barra2_humidity_pct")
+        if "wind_speed_kmh" in df.columns and "barra2_wind_kmh" in df.columns:
+            pair_opts["Wind (km/h)"] = ("wind_speed_kmh", "barra2_wind_kmh")
+
+        if pair_opts:
+            sel_pair = st.selectbox("Compare variable",
+                                    list(pair_opts.keys()))
+            bom_c, b2_c = pair_opts[sel_pair]
+
+            agg = {bom_c: "mean", b2_c: "first"}
+            if "state" in df.columns:
+                agg["state"] = "first"
+
+            comp_df = (
+                df.groupby("station_name").agg(agg)
+                .reset_index()
+                .dropna()
+                .sort_values(bom_c, ascending=False)
+                .head(40)
+            )
+            for c in [bom_c, b2_c]:
+                comp_df[c] = pd.to_numeric(
+                    comp_df[c], errors="coerce"
+                ).round(1)
+
+            fig_comp = go.Figure()
+            fig_comp.add_trace(go.Bar(
+                name="BOM Current",
+                x=comp_df["station_name"],
+                y=comp_df[bom_c],
+                marker_color=T["critical"],
+                opacity=0.85,
+            ))
+            fig_comp.add_trace(go.Bar(
+                name="BARRA2 Historical",
+                x=comp_df["station_name"],
+                y=comp_df[b2_c],
+                marker_color=T["accent"],
+                opacity=0.85,
+            ))
+            fig_comp.update_layout(barmode="group")
+            chart_layout(
+                fig_comp,
+                title=f"BOM Current vs BARRA2 Historical - {sel_pair}",
+                height=460, xangle=-45, legend=True,
+                margin=dict(t=50, b=60, l=44, r=16),
+            )
+            st.plotly_chart(fig_comp, use_container_width=True)
+
+            comp_df["difference"] = (
+                comp_df[bom_c] - comp_df[b2_c]
+            ).round(2)
+            fig_diff = px.bar(
+                comp_df.sort_values("difference", ascending=False),
+                x="station_name", y="difference",
+                color="difference",
+                color_continuous_scale=COLOUR_SCALE_DIV,
+                color_continuous_midpoint=0,
+                template=T["plotly_tmpl"],
+                labels={"station_name": "Station",
+                        "difference": f"Difference ({sel_pair})"},
+            )
+            fig_diff.add_hline(y=0, line_color=T["border"], opacity=0.4)
+            chart_layout(
+                fig_diff,
+                title=f"Difference: BOM minus BARRA2 Historical - {sel_pair}",
+                height=360, xangle=-45,
+            )
+            st.plotly_chart(fig_diff, use_container_width=True)
+
+            if "barra2_baseline_year" in df.columns:
+                yr = df["barra2_baseline_year"].dropna().iloc[0] \
+                    if not df["barra2_baseline_year"].dropna().empty else "?"
+                mo = df["barra2_baseline_month"].dropna().iloc[0] \
+                    if "barra2_baseline_month" in df.columns else "?"
+                st.caption(
+                    f"BARRA2 baseline: {yr}-{int(mo):02d} | "
+                    f"12km resolution AUS-11 grid | "
+                    f"Source: NCI THREDDS ob53 CC-BY 4.0"
+                )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 5 -- DATA TABLE
+# ─────────────────────────────────────────────────────────────────────────────
+if selected_view == "Data Table":
+    st.subheader("Station Summary Table")
+
+    if summary.empty:
+        st.info("Run `python main.py` to generate station summaries.")
+    else:
+        disp_map = {
+            "station_name":        "Station",
+            "state":               "State",
+            "mean_temperature_c":  "Avg Temp (C)",
+            "max_temperature_c":   "Max Temp (C)",
+            "min_temperature_c":   "Min Temp (C)",
+            "temp_range_c":        "Range (C)",
+            "mean_feels_like_c":   "Feels Like (C)",
+            "mean_humidity_pct":   "Humidity (%)",
+            "mean_wind_speed_kmh": "Wind (km/h)",
+            "max_gust_kmh":        "Gust (km/h)",
+            "mean_pressure_hpa":   "Pressure (hPa)",
+            "heat_stress_score":   "Heat Stress",
+            "vulnerability_index": "Vulnerability",
+            "barra2_temp_c":       "BARRA2 Temp (C)",
+            "temp_anomaly_c":      "Temp Anomaly (C)",
+            "record_count":        "Records",
+            "latitude":            "Lat",
+            "longitude":           "Lon",
+        }
+        avail = {k: v for k, v in disp_map.items() if k in summary.columns}
+        disp  = summary[list(avail.keys())].copy()
+        disp.rename(columns=avail, inplace=True)
+        for col in disp.select_dtypes("float").columns:
+            disp[col] = disp[col].round(1)
+
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            if "State" in disp.columns:
+                flt = st.multiselect(
+                    "Filter by State",
+                    options=sorted(disp["State"].dropna().unique().tolist()),
+                    key="tbl_state",
+                )
+                if flt:
+                    disp = disp[disp["State"].isin(flt)]
+        with fc2:
+            sort_opts = [c for c in disp.columns
+                         if c not in ["Station", "State", "Lat", "Lon"]]
+            sort_col  = st.selectbox("Sort by", sort_opts, key="tbl_sort")
+        with fc3:
+            sort_asc = st.radio("Order",
+                                ["Descending", "Ascending"],
+                                horizontal=True, key="tbl_order")
+
+        if sort_col in disp.columns:
+            disp = disp.sort_values(
+                sort_col, ascending=(sort_asc == "Ascending")
+            )
+
+        st.dataframe(disp, use_container_width=True,
+                     hide_index=True, height=560)
+
+        dl1, dl2, _ = st.columns([1, 1, 4])
+        with dl1:
+            st.download_button(
+                "Download CSV",
+                data=disp.to_csv(index=False),
+                file_name="ausclimate_station_summary.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with dl2:
+            st.download_button(
+                "Download JSON",
+                data=disp.to_json(orient="records", indent=2),
+                file_name="ausclimate_station_summary.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+
+    with st.expander("Raw merged data (first 500 rows)"):
+        if not df.empty:
+            st.dataframe(df.head(500), use_container_width=True,
+                         hide_index=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 6 -- ENERGY (AEMO)
+# ─────────────────────────────────────────────────────────────────────────────
+if selected_view == "Energy":
+    st.subheader("Energy Demand vs Climate Conditions")
+    st.caption(
+        "AEMO 5-minute dispatch data for NEM regions overlaid with "
+        "live BOM temperature readings. WA and NT are not on the NEM."
+    )
+
+    if st.button("Refresh AEMO Data", key="aemo_ref"):
+        with st.spinner("Fetching AEMO dispatch..."):
+            try:
+                from ingestion.aemo import (
+                    fetch_aemo_dispatch, merge_aemo_with_bom
+                )
+                from pipeline.storage import save_parquet as sp
+                new_aemo   = fetch_aemo_dispatch(force_refresh=True)
+                sp(new_aemo, "data/processed/aemo_latest.parquet")
+                new_merged = merge_aemo_with_bom(df, new_aemo)
+                if not new_merged.empty:
+                    sp(new_merged, "data/processed/aemo_bom_merged.parquet")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"AEMO refresh failed: {e}")
+
+    if not aemo_available:
+        st.info(
+            "AEMO data is not yet loaded or shows placeholder values. "
+            "Click Refresh above or run `python main.py`."
+        )
+    else:
+        total_dem     = df_aemo["total_demand_mw"].sum()
+        has_price     = ("rrp_per_mwh" in df_aemo.columns
+                         and df_aemo["rrp_per_mwh"].notna().any())
+        max_price     = df_aemo["rrp_per_mwh"].max() if has_price else 0
+        max_price_rgn = ""
+        if has_price:
+            idx = df_aemo["rrp_per_mwh"].idxmax()
+            max_price_rgn = df_aemo.loc[idx, "region_name"] \
+                if "region_name" in df_aemo.columns else ""
+
+        settle_str = ""
+        if "settlement_date" in df_aemo.columns:
+            t = df_aemo["settlement_date"].dropna()
+            if not t.empty:
+                settle_str = str(t.iloc[0])[:16]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total NEM Demand", f"{total_dem:,.0f} MW")
+        c2.metric("Highest Spot Price", f"${max_price:,.0f}/MWh",
+                  max_price_rgn)
+        c3.metric("NEM Regions", "5")
+        c4.metric("Last Updated", settle_str or "Just now")
+
+        st.divider()
+
+        cl, cr = st.columns(2)
+        with cl:
+            dem_df = df_aemo.dropna(subset=["total_demand_mw"]).copy()
+            dem_df = dem_df.sort_values("total_demand_mw", ascending=False)
+            xc     = "region_name" \
+                if "region_name" in dem_df.columns else "region"
+            fig_dem = px.bar(
+                dem_df, x=xc, y="total_demand_mw",
+                color="total_demand_mw",
+                color_continuous_scale=COLOUR_SCALE_SEQ,
+                text_auto=".0f", template=T["plotly_tmpl"],
+                labels={"total_demand_mw": "Demand (MW)", xc: "Region"},
+            )
+            fig_dem.update_traces(textposition="outside")
+            chart_layout(fig_dem, title="Current Demand by Region",
+                         height=340)
+            st.plotly_chart(fig_dem, use_container_width=True)
+
+        with cr:
+            if has_price:
+                pr_df = df_aemo.dropna(subset=["rrp_per_mwh"]).copy()
+                pr_df = pr_df.sort_values("rrp_per_mwh", ascending=False)
+                xc2   = "region_name" \
+                    if "region_name" in pr_df.columns else "region"
+                fig_pr = px.bar(
+                    pr_df, x=xc2, y="rrp_per_mwh",
+                    color="rrp_per_mwh",
+                    color_continuous_scale="RdYlGn_r",
+                    text_auto=".0f", template=T["plotly_tmpl"],
+                    labels={"rrp_per_mwh": "$/MWh", xc2: "Region"},
+                )
+                fig_pr.update_traces(textposition="outside")
+                chart_layout(fig_pr, title="Spot Price by Region",
+                             height=340)
+                st.plotly_chart(fig_pr, use_container_width=True)
+            else:
+                st.info("Spot price not available in this fetch.")
+
+        st.divider()
+
+        # Temperature vs demand
+        st.subheader("Temperature vs Electricity Demand")
+        if (not df_aemo_bom.empty
+                and "avg_temp_c" in df_aemo_bom.columns
+                and "total_demand_mw" in df_aemo_bom.columns):
+            corr_df = df_aemo_bom.dropna(
+                subset=["avg_temp_c", "total_demand_mw"]
+            )
+            if not corr_df.empty:
+                xl   = "region_name" \
+                    if "region_name" in corr_df.columns else "region"
+                hover = {"region": True, "avg_temp_c": ":.1f",
+                         "total_demand_mw": ":,.0f", "states": True}
+                if has_price and "rrp_per_mwh" in corr_df.columns:
+                    hover["rrp_per_mwh"] = ":,.0f"
+                fig_corr = px.scatter(
+                    corr_df, x="avg_temp_c", y="total_demand_mw",
+                    text=xl, size=[40] * len(corr_df),
+                    color="total_demand_mw",
+                    color_continuous_scale=COLOUR_SCALE_SEQ,
+                    hover_data=hover,
+                    template=T["plotly_tmpl"],
+                    labels={
+                        "avg_temp_c":      "Average Temperature (C)",
+                        "total_demand_mw": "Electricity Demand (MW)",
+                    },
+                )
+                fig_corr.update_traces(
+                    textposition="top center",
+                    marker=dict(opacity=0.85,
+                                line=dict(width=1, color=T["bg_card"]))
+                )
+                chart_layout(fig_corr, height=400)
+                st.plotly_chart(fig_corr, use_container_width=True)
+
+        # History
+        if (not df_aemo_hist.empty
+                and "settlement_date" in df_aemo_hist.columns):
+            hist = df_aemo_hist.copy()
+            hist["settlement_date"] = pd.to_datetime(
+                hist["settlement_date"], errors="coerce"
+            )
+            hist["total_demand_mw"] = pd.to_numeric(
+                hist["total_demand_mw"], errors="coerce"
+            )
+            hist = hist.dropna(
+                subset=["settlement_date", "total_demand_mw"]
+            )
+            if not hist.empty:
+                st.divider()
+                st.subheader("Demand History")
+                clr_col = "region_name" \
+                    if "region_name" in hist.columns else "region"
+                opts    = hist[clr_col].dropna().unique().tolist()
+                sel_r   = st.multiselect("Regions", opts,
+                                         default=opts[:3], key="aemo_h")
+                hf      = hist[hist[clr_col].isin(sel_r)] \
+                    if sel_r else hist
+                fig_h   = px.line(
+                    hf.sort_values("settlement_date"),
+                    x="settlement_date", y="total_demand_mw",
+                    color=clr_col, template=T["plotly_tmpl"],
+                    labels={"settlement_date": "Time",
+                            "total_demand_mw": "Demand (MW)",
+                            clr_col: "Region"},
+                )
+                chart_layout(fig_h, title="NEM Regional Demand Over Time",
+                             height=340, legend=True)
+                st.plotly_chart(fig_h, use_container_width=True)
+
+        # Region table
+        st.divider()
+        disp_src = df_aemo_bom if not df_aemo_bom.empty else df_aemo
+        col_map  = {
+            "region":          "Region ID",
+            "region_name":     "Region",
+            "states":          "States",
+            "total_demand_mw": "Demand (MW)",
+            "rrp_per_mwh":     "Spot Price ($/MWh)",
+            "avg_temp_c":      "Avg Temp (C)",
+            "max_temp_c":      "Max Temp (C)",
+            "station_count":   "BOM Stations",
+        }
+        avail_c = {k: v for k, v in col_map.items()
+                   if k in disp_src.columns}
+        if avail_c:
+            d2 = disp_src[list(avail_c.keys())].copy()
+            d2.rename(columns=avail_c, inplace=True)
+            for col in ["Demand (MW)", "Spot Price ($/MWh)",
+                        "Avg Temp (C)", "Max Temp (C)"]:
+                if col in d2.columns:
+                    d2[col] = pd.to_numeric(
+                        d2[col], errors="coerce"
+                    ).round(1)
+            st.dataframe(d2, use_container_width=True, hide_index=True)
+
+        st.caption(
+            "Source: AEMO NEMWeb public dispatch data | "
+            "nemweb.com.au/Reports/Current/DispatchIS_Reports/ | "
+            "CC-BY 4.0"
+        )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 7 -- CLUSTERING
+# ─────────────────────────────────────────────────────────────────────────────
+if selected_view == "Clustering":
+    st.subheader("Climate Station Clustering")
+    st.caption(
+        "K-Means clustering groups the 700+ BOM stations into distinct "
+        "climate profiles using temperature, humidity, wind, pressure, "
+        "and geographic location. Each cluster represents a recognisable "
+        "Australian climate regime. Anomalies detected within a cluster "
+        "are contextualised against stations sharing similar baseline "
+        "conditions rather than the full national dataset."
+    )
+
+    cluster_available = (
+        not df_clusters.empty
+        and "cluster_label" in df_clusters.columns
+    )
+
+    if not cluster_available and "cluster_label" in summary.columns:
+        df_clusters      = summary.copy()
+        cluster_available = True
+
+    if not cluster_available:
+        st.info(
+            "Climate cluster data not yet available. "
+            "Run `python main.py` to generate cluster assignments."
+        )
+        st.markdown("""
+        **What this tab shows when clustering runs:**
+        - National map with stations coloured by climate cluster
+        - Six Australian climate profiles: Tropical, Arid Desert,
+          Subtropical, Temperate Coastal, Cool Temperate, Mediterranean
+        - Variable comparison across clusters
+        - Cluster profile radar chart
+        - Anomaly rates per cluster
+        - Full station to cluster assignment table
+        """)
+    else:
+        # Colour palette
+        CLUSTER_COLOURS = {
+            "Tropical":           "#EF4444",
+            "Arid Desert":        "#F59E0B",
+            "Subtropical":        "#F97316",
+            "Temperate Coastal":  "#3B82F6",
+            "Cool Temperate":     "#06B6D4",
+            "Mediterranean":      "#8B5CF6",
+        }
+
+        n_clusters_found = df_clusters["cluster_label"].nunique()
+        n_stations_cl    = len(df_clusters)
+
+        # Top metrics
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Climate Clusters",    n_clusters_found)
+        c2.metric("Stations Clustered",  f"{n_stations_cl:,}")
+
+        if "mean_temperature_c" in df_clusters.columns:
+            hottest_cl = (
+                df_clusters.groupby("cluster_label")["mean_temperature_c"]
+                .mean().idxmax()
+            )
+            coldest_cl = (
+                df_clusters.groupby("cluster_label")["mean_temperature_c"]
+                .mean().idxmin()
+            )
+            c3.metric("Hottest Cluster",  hottest_cl)
+            c4.metric("Coolest Cluster",  coldest_cl)
+
+        st.divider()
+
+        # Cluster map
+        map_df_c = df_clusters.dropna(
+            subset=["latitude", "longitude", "cluster_label"]
+        ).copy()
+        for col in ["latitude", "longitude"]:
+            map_df_c[col] = pd.to_numeric(map_df_c[col], errors="coerce")
+        map_df_c = map_df_c.dropna(subset=["latitude", "longitude"])
+
+        if not map_df_c.empty:
+            hover_data = {
+                "cluster_label": True,
+                "state":         True,
+                "latitude":      False,
+                "longitude":     False,
+            }
+            for col in ["mean_temperature_c", "mean_humidity_pct"]:
+                if col in map_df_c.columns:
+                    map_df_c[col] = pd.to_numeric(
+                        map_df_c[col], errors="coerce"
+                    ).round(1)
+                    hover_data[col] = ":.1f"
+
+            fig_cl_map = px.scatter_mapbox(
+                map_df_c,
+                lat="latitude",
+                lon="longitude",
+                color="cluster_label",
+                color_discrete_map=CLUSTER_COLOURS,
+                hover_name="station_name",
+                hover_data=hover_data,
+                zoom=3.4,
+                center={"lat": -26, "lon": 134},
+                height=580,
+                size_max=12,
+            )
+            map_layout(
+                fig_cl_map, T,
+                title=f"Australian Climate Clusters - "
+                      f"{n_clusters_found} profiles from "
+                      f"{n_stations_cl:,} stations",
+                height=580,
+                legend=True,
+            )
+            fig_cl_map.update_layout(
+                legend=dict(
+                    title=dict(
+                        text="Climate Profile",
+                        font=dict(size=11, color=T["text_secondary"]),
+                    ),
+                )
+            )
+            st.plotly_chart(fig_cl_map, use_container_width=True)
+
+        st.divider()
+
+        # Get cluster profiles
+        try:
+            from anomaly.detector import get_cluster_profiles
+            profiles = get_cluster_profiles(df_clusters)
+        except Exception:
+            profiles = pd.DataFrame()
+
+        if profiles.empty and cluster_available:
+            agg_dict = {"station_name": "count"}
+            for col in [
+                "mean_temperature_c", "mean_humidity_pct",
+                "mean_wind_speed_kmh", "mean_pressure_hpa",
+                "latitude", "longitude",
+            ]:
+                if col in df_clusters.columns:
+                    agg_dict[col] = "mean"
+            profiles = (
+                df_clusters.groupby("cluster_label")
+                .agg(agg_dict)
+                .reset_index()
+                .rename(columns={"station_name": "station_count"})
+            )
+            for col in profiles.select_dtypes("float").columns:
+                profiles[col] = profiles[col].round(1)
+
+        if not profiles.empty:
+
+            # Variable comparison
+            st.subheader("Variable Comparison Across Clusters")
+            profile_vars = {}
+            for col, label in {
+                "mean_temperature_c":  "Average Temperature (C)",
+                "mean_humidity_pct":   "Average Humidity (%)",
+                "mean_wind_speed_kmh": "Average Wind Speed (km/h)",
+                "mean_pressure_hpa":   "Average Pressure (hPa)",
+            }.items():
+                if col in profiles.columns:
+                    profile_vars[label] = col
+
+            if profile_vars:
+                var_sel = st.selectbox(
+                    "Select variable to compare",
+                    options=list(profile_vars.keys()),
+                    key="cl_var_sel",
+                )
+                var_col = profile_vars[var_sel]
+                profiles[var_col] = pd.to_numeric(
+                    profiles[var_col], errors="coerce"
+                ).round(1)
+
+                fig_var = px.bar(
+                    profiles.sort_values(var_col, ascending=False),
+                    x="cluster_label",
+                    y=var_col,
+                    color="cluster_label",
+                    color_discrete_map=CLUSTER_COLOURS,
+                    text_auto=".1f",
+                    template=T["plotly_tmpl"],
+                    labels={
+                        "cluster_label": "Cluster",
+                        var_col:         var_sel,
+                    },
+                )
+                fig_var.update_traces(textposition="outside")
+                fig_var.update_layout(showlegend=False)
+                chart_layout(
+                    fig_var,
+                    title=f"{var_sel} by Climate Cluster",
+                    height=360,
+                )
+                st.plotly_chart(fig_var, use_container_width=True)
+
+            st.divider()
+
+            # Charts row: station count + radar
+            col_l, col_r = st.columns(2)
+
+            with col_l:
+                st.subheader("Stations per Cluster")
+                if "station_count" in profiles.columns:
+                    fig_cnt = px.bar(
+                        profiles.sort_values(
+                            "station_count", ascending=False
+                        ),
+                        x="cluster_label",
+                        y="station_count",
+                        color="cluster_label",
+                        color_discrete_map=CLUSTER_COLOURS,
+                        text_auto=True,
+                        template=T["plotly_tmpl"],
+                        labels={
+                            "cluster_label": "Cluster",
+                            "station_count": "Stations",
+                        },
+                    )
+                    fig_cnt.update_traces(textposition="outside")
+                    fig_cnt.update_layout(showlegend=False)
+                    chart_layout(fig_cnt, height=320, xangle=-15)
+                    st.plotly_chart(fig_cnt, use_container_width=True)
+
+            with col_r:
+                st.subheader("Multi-Variable Cluster Radar")
+                radar_vars = {
+                    "mean_temperature_c":  "Temp",
+                    "mean_humidity_pct":   "Humidity",
+                    "mean_wind_speed_kmh": "Wind",
+                }
+                avail_r = {k: v for k, v in radar_vars.items()
+                           if k in profiles.columns}
+
+                if len(avail_r) >= 2:
+                    fig_radar = go.Figure()
+                    for _, row in profiles.iterrows():
+                        cname = row["cluster_label"]
+                        vals  = []
+                        for col in avail_r:
+                            v = pd.to_numeric(
+                                row.get(col, 0), errors="coerce"
+                            )
+                            vals.append(
+                                float(v) if not pd.isna(v) else 0
+                            )
+                        fig_radar.add_trace(go.Scatterpolar(
+                            r=vals,
+                            theta=list(avail_r.values()),
+                            fill="toself",
+                            name=cname,
+                            opacity=0.65,
+                            marker_color=CLUSTER_COLOURS.get(
+                                cname, T["accent"]
+                            ),
+                        ))
+                    fig_radar.update_layout(
+                        polar=dict(
+                            bgcolor=T["bg_card"],
+                            radialaxis=dict(
+                                visible=True,
+                                gridcolor=T["grid_color"],
+                                linecolor=T["axis_color"],
+                                tickfont=dict(
+                                    size=9,
+                                    color=T["text_secondary"]
+                                ),
+                            ),
+                            angularaxis=dict(
+                                gridcolor=T["grid_color"],
+                                linecolor=T["axis_color"],
+                                tickfont=dict(
+                                    size=10,
+                                    color=T["text_secondary"]
+                                ),
+                            ),
+                        ),
+                        paper_bgcolor=T["paper_bg"],
+                        font=dict(color=T["text_secondary"], size=11),
+                        height=320,
+                        showlegend=True,
+                        margin=dict(t=44, b=20, l=40, r=40),
+                        legend=dict(
+                            bgcolor="rgba(0,0,0,0)",
+                            bordercolor=T["border"],
+                            borderwidth=1,
+                            font=dict(
+                                size=10,
+                                color=T["text_secondary"]
+                            ),
+                        ),
+                    )
+                    st.plotly_chart(fig_radar, use_container_width=True)
+
+            st.divider()
+
+            # Anomaly rate per cluster
+            if "ml_anomaly_flag" in df_clusters.columns \
+                    or "cluster_label" in df.columns:
+                st.subheader("Anomaly Rate per Cluster")
+
+                # Merge cluster labels onto main df if needed
+                df_with_cl = df.copy()
+                if "cluster_label" not in df_with_cl.columns \
+                        and "station_name" in df_with_cl.columns \
+                        and "cluster_label" in df_clusters.columns:
+                    cl_map = df_clusters.set_index(
+                        "station_name"
+                    )["cluster_label"].to_dict()
+                    df_with_cl["cluster_label"] = (
+                        df_with_cl["station_name"].map(cl_map)
+                    )
+
+                if ("cluster_label" in df_with_cl.columns
+                        and "ml_anomaly_flag" in df_with_cl.columns):
+                    cl_anom = (
+                        df_with_cl.groupby("cluster_label")
+                        .agg(
+                            total      = ("ml_anomaly_flag", "count"),
+                            anomalies  = ("ml_anomaly_flag", "sum"),
+                        )
+                        .reset_index()
+                    )
+                    cl_anom["anomaly_rate_pct"] = (
+                        cl_anom["anomalies"] /
+                        cl_anom["total"] * 100
+                    ).round(1)
+                    cl_anom = cl_anom.sort_values(
+                        "anomaly_rate_pct", ascending=False
+                    )
+
+                    fig_anom_cl = px.bar(
+                        cl_anom,
+                        x="cluster_label",
+                        y="anomaly_rate_pct",
+                        color="cluster_label",
+                        color_discrete_map=CLUSTER_COLOURS,
+                        text_auto=".1f",
+                        template=T["plotly_tmpl"],
+                        labels={
+                            "cluster_label":   "Cluster",
+                            "anomaly_rate_pct":"Anomaly Rate (%)",
+                        },
+                    )
+                    fig_anom_cl.update_traces(textposition="outside")
+                    fig_anom_cl.update_layout(showlegend=False)
+                    chart_layout(
+                        fig_anom_cl,
+                        title="Isolation Forest Anomaly Rate by Cluster",
+                        height=320,
+                    )
+                    st.plotly_chart(
+                        fig_anom_cl, use_container_width=True
+                    )
+                    st.caption(
+                        "A higher anomaly rate in a cluster means "
+                        "conditions in that climate regime are more "
+                        "frequently unusual relative to the training "
+                        "baseline."
+                    )
+
+            st.divider()
+
+            # Cluster detail table
+            st.subheader("Cluster Summary Table")
+            display_map = {
+                "cluster_label":       "Cluster",
+                "station_count":       "Stations",
+                "mean_temperature_c":  "Avg Temp (C)",
+                "mean_humidity_pct":   "Avg Humidity (%)",
+                "mean_wind_speed_kmh": "Avg Wind (km/h)",
+                "mean_pressure_hpa":   "Avg Pressure (hPa)",
+                "latitude":            "Avg Latitude",
+                "longitude":           "Avg Longitude",
+            }
+            avail_d = {k: v for k, v in display_map.items()
+                       if k in profiles.columns}
+            disp_p  = profiles[list(avail_d.keys())].copy()
+            disp_p.rename(columns=avail_d, inplace=True)
+            for col in disp_p.select_dtypes("float").columns:
+                disp_p[col] = disp_p[col].round(1)
+            st.dataframe(
+                disp_p.sort_values("Avg Temp (C)", ascending=False)
+                if "Avg Temp (C)" in disp_p.columns else disp_p,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # Full station assignment
+            with st.expander("View all station cluster assignments"):
+                view_cols = [c for c in [
+                    "station_name", "state", "cluster_label",
+                    "mean_temperature_c", "mean_humidity_pct",
+                    "mean_wind_speed_kmh",
+                ] if c in df_clusters.columns]
+                if view_cols:
+                    cv = df_clusters[view_cols].copy()
+                    cv.rename(columns={
+                        "station_name":       "Station",
+                        "state":              "State",
+                        "cluster_label":      "Cluster",
+                        "mean_temperature_c": "Avg Temp (C)",
+                        "mean_humidity_pct":  "Avg Humidity (%)",
+                        "mean_wind_speed_kmh":"Avg Wind (km/h)",
+                    }, inplace=True)
+                    for col in cv.select_dtypes("float").columns:
+                        cv[col] = cv[col].round(1)
+                    st.dataframe(
+                        cv.sort_values("Cluster")
+                        if "Cluster" in cv.columns else cv,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=400,
+                    )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 8 -- POPULATION RISK (ABS)
+# ─────────────────────────────────────────────────────────────────────────────
+if selected_view == "Population Risk":
+    st.subheader("Population Risk")
+    st.caption(
+        "Combines live climate conditions with ABS population data. "
+        "A dangerous reading near a major city matters more than the "
+        "same reading in a remote area. This tab helps councils and "
+        "emergency services prioritise where to act."
+    )
+
+    # Load ABS-enriched summary
+    abs_enriched = summary.copy() if not summary.empty else pd.DataFrame()
+    abs_available = (
+        not abs_enriched.empty
+        and "population" in abs_enriched.columns
+        and abs_enriched["population"].notna().any()
+    )
+
+    if not abs_available:
+        st.info(
+            "Population data not yet loaded. "
+            "Run `python main.py` to fetch it."
+        )
+        st.markdown(f"""
+        <div style="background:{T['bg_card']};
+                    border:1px solid {T['border']};
+                    border-radius:8px; padding:18px 20px;
+                    margin-top:12px;">
+            <div style="font-size:13px; font-weight:700;
+                        color:{T['text_primary']}; margin-bottom:12px;">
+                What this tab shows
+            </div>
+            <div style="font-size:12px; color:{T['text_secondary']};
+                        line-height:2.0;">
+                Population nearby each BOM station (ABS 2022 ERP)<br>
+                How disadvantaged each area is (ABS SEIFA 2021)<br>
+                Population Risk Score combining climate stress + population<br>
+                Which stations need the most urgent attention
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    else:
+        # Top summary metrics
+        total_pop = int(
+            abs_enriched["population"].dropna().sum()
+        ) if "population" in abs_enriched.columns else 0
+
+        critical  = int(
+            (abs_enriched.get(
+                "population_risk_category", pd.Series()
+            ) == "Critical").sum()
+        ) if "population_risk_category" in abs_enriched.columns else 0
+
+        avg_seifa = float(
+            pd.to_numeric(
+                abs_enriched.get("seifa_score", pd.Series()),
+                errors="coerce"
+            ).mean()
+        ) if "seifa_score" in abs_enriched.columns else 0
+
+        high_risk = int(
+            (abs_enriched.get(
+                "population_risk_category", pd.Series()
+            ).isin(["Critical", "High"])).sum()
+        ) if "population_risk_category" in abs_enriched.columns else 0
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total People Near Stations",
+                  f"{total_pop:,}")
+        c2.metric("Critical Risk Stations",
+                  critical)
+        c3.metric("High + Critical Stations",
+                  high_risk)
+        c4.metric("Avg Area SEIFA Score",
+                  f"{avg_seifa:.0f}",
+                  "1000 = national average")
+
+        st.divider()
+
+        # Population exposure map
+        st.subheader("Who Is Exposed?")
+        st.caption(
+            "Each dot is a BOM station. "
+            "Bigger dot = more people living nearby. "
+            "Darker colour = higher population risk score."
+        )
+
+        map_data = abs_enriched.copy()
+        for lc in ["latitude", "lat"]:
+            if lc in map_data.columns:
+                map_data["_lat"] = pd.to_numeric(
+                    map_data[lc], errors="coerce"
+                )
+                break
+        for lc in ["longitude", "lon"]:
+            if lc in map_data.columns:
+                map_data["_lon"] = pd.to_numeric(
+                    map_data[lc], errors="coerce"
+                )
+                break
+
+        if "_lat" in map_data.columns and "_lon" in map_data.columns:
+            map_data = map_data.dropna(
+                subset=["_lat", "_lon", "population"]
+            ).copy()
+            map_data["population"] = pd.to_numeric(
+                map_data["population"], errors="coerce"
+            ).fillna(1000)
+
+            colour_col = "population_risk_score" \
+                if "population_risk_score" in map_data.columns \
+                else "population_exposure" \
+                if "population_exposure" in map_data.columns \
+                else "population"
+
+            hover = {
+                "state":            True,
+                "_lat":             False,
+                "_lon":             False,
+                "population":       ":,.0f",
+            }
+            for opt_col in [
+                "nearest_centre", "population_label",
+                "disadvantage_label", "population_risk_score",
+                "population_risk_category",
+            ]:
+                if opt_col in map_data.columns:
+                    hover[opt_col] = True
+
+            fig_map = px.scatter_mapbox(
+                map_data,
+                lat="_lat", lon="_lon",
+                color=colour_col,
+                color_continuous_scale=COLOUR_SCALE_SEQ,
+                size="population",
+                size_max=28,
+                hover_name="station_name",
+                hover_data=hover,
+                zoom=3.4,
+                center={"lat": -26, "lon": 134},
+                height=600,
+                labels={
+                    colour_col:  "Risk Score",
+                    "population":"Nearby Population",
+                },
+            )
+            map_layout(
+                fig_map, T,
+                title="Population Exposure Map - "
+                      "dot size = people nearby",
+                height=600,
+            )
+            fig_map.update_layout(
+                coloraxis=dict(
+                    colorbar=dict(
+                        title=dict(
+                            text="Risk Score",
+                            font=dict(size=11,
+                                      color=T["text_secondary"]),
+                        ),
+                        tickfont=dict(size=10,
+                                      color=T["text_secondary"]),
+                    )
+                )
+            )
+            st.plotly_chart(fig_map, use_container_width=True)
+
+        st.divider()
+
+        # Two simple charts side by side
+        col_l, col_r = st.columns(2)
+
+        with col_l:
+            st.subheader("Top 20 Most Exposed Stations")
+            st.caption(
+                "Stations near the largest populations. "
+                "These affect the most people."
+            )
+            if "population" in abs_enriched.columns:
+                top_pop = (
+                    abs_enriched.dropna(subset=["population"])
+                    .nlargest(20, "population")[
+                        ["station_name", "state",
+                         "population", "population_label"]
+                    ].copy()
+                )
+                top_pop["population"] = pd.to_numeric(
+                    top_pop["population"], errors="coerce"
+                ).round(0)
+                fig_pop = px.bar(
+                    top_pop.sort_values("population"),
+                    x="population", y="station_name",
+                    orientation="h",
+                    color="population",
+                    color_continuous_scale=COLOUR_SCALE_BLUE,
+                    text_auto=True,
+                    template=T["plotly_tmpl"],
+                    labels={
+                        "population":   "Nearby Population",
+                        "station_name": "Station",
+                    },
+                )
+                chart_layout(
+                    fig_pop,
+                    height=max(380, len(top_pop) * 22),
+                    margin=dict(t=20, b=20, l=180, r=80),
+                )
+                st.plotly_chart(fig_pop, use_container_width=True)
+
+        with col_r:
+            st.subheader("Disadvantage Score by State")
+            st.caption(
+                "Average SEIFA score per state. "
+                "Lower = more disadvantaged. "
+                "These areas need more support during climate events."
+            )
+            if "seifa_score" in abs_enriched.columns \
+                    and "state" in abs_enriched.columns:
+                state_seifa = (
+                    abs_enriched.groupby("state")["seifa_score"]
+                    .mean().reset_index()
+                    .sort_values("seifa_score")
+                )
+                state_seifa["seifa_score"] = state_seifa[
+                    "seifa_score"
+                ].round(0)
+                fig_seifa = px.bar(
+                    state_seifa,
+                    x="state", y="seifa_score",
+                    color="seifa_score",
+                    color_continuous_scale="RdYlGn",
+                    text_auto=".0f",
+                    template=T["plotly_tmpl"],
+                    labels={
+                        "state":       "State",
+                        "seifa_score": "SEIFA IRSD Score",
+                    },
+                )
+                fig_seifa.add_hline(
+                    y=1000,
+                    line_dash="dash",
+                    line_color=T["border"],
+                    opacity=0.5,
+                    annotation_text="National average (1000)",
+                )
+                fig_seifa.update_traces(textposition="outside")
+                chart_layout(
+                    fig_seifa,
+                    title="Average SEIFA Score per State",
+                    height=380,
+                )
+                st.plotly_chart(fig_seifa, use_container_width=True)
+
+        st.divider()
+
+        # Risk categories chart
+        if "population_risk_category" in abs_enriched.columns:
+            st.subheader("Population Risk Categories")
+            st.caption(
+                "Critical = high climate stress AND large nearby population. "
+                "Low = lower stress OR fewer people nearby."
+            )
+
+            risk_counts = (
+                abs_enriched["population_risk_category"]
+                .value_counts().reset_index()
+            )
+            risk_counts.columns = ["Category", "Stations"]
+            risk_colours = {
+                "Critical": T["critical"],
+                "High":     T["warning"],
+                "Moderate": "#A0A020",
+                "Low":      T["success"],
+            }
+
+            fig_risk = px.bar(
+                risk_counts,
+                x="Category", y="Stations",
+                color="Category",
+                color_discrete_map=risk_colours,
+                text_auto=True,
+                template=T["plotly_tmpl"],
+            )
+            fig_risk.update_traces(textposition="outside")
+            fig_risk.update_layout(showlegend=False)
+            chart_layout(
+                fig_risk,
+                title="How many stations fall in each risk category?",
+                height=320,
+            )
+            st.plotly_chart(fig_risk, use_container_width=True)
+
+        st.divider()
+
+        # Station priority table
+        st.subheader("Station Priority Table")
+        st.caption(
+            "Sorted by Population Risk Score. "
+            "Focus on Critical and High stations first."
+        )
+
+        col_map = {
+            "station_name":            "Station",
+            "state":                   "State",
+            "nearest_centre":          "Nearest City",
+            "distance_km":             "Distance (km)",
+            "population":              "Nearby Population",
+            "population_label":        "City Size",
+            "seifa_score":             "SEIFA Score",
+            "disadvantage_label":      "Disadvantage Level",
+            "population_exposure":     "Population Score (0-100)",
+            "population_risk_score":   "Population Risk Score",
+            "population_risk_category":"Risk Category",
+        }
+        avail = {k: v for k, v in col_map.items()
+                 if k in abs_enriched.columns}
+
+        if avail:
+            disp = abs_enriched[list(avail.keys())].copy()
+            disp.rename(columns=avail, inplace=True)
+
+            for col in ["Distance (km)", "SEIFA Score",
+                        "Population Score (0-100)",
+                        "Population Risk Score"]:
+                if col in disp.columns:
+                    disp[col] = pd.to_numeric(
+                        disp[col], errors="coerce"
+                    ).round(1)
+            if "Nearby Population" in disp.columns:
+                disp["Nearby Population"] = pd.to_numeric(
+                    disp["Nearby Population"], errors="coerce"
+                ).round(0).astype("Int64")
+
+            sort_col = "Population Risk Score" \
+                if "Population Risk Score" in disp.columns \
+                else disp.columns[0]
+            disp = disp.sort_values(sort_col, ascending=False)
+
+            # State filter
+            if "State" in disp.columns:
+                state_filter = st.multiselect(
+                    "Filter by state",
+                    options=sorted(
+                        disp["State"].dropna().unique().tolist()
+                    ),
+                    key="abs_state_filter",
+                )
+                if state_filter:
+                    disp = disp[disp["State"].isin(state_filter)]
+
+            st.dataframe(
+                disp, use_container_width=True,
+                hide_index=True, height=480,
+            )
+
+            st.download_button(
+                "Download Population Risk Data (CSV)",
+                data=disp.to_csv(index=False),
+                file_name="ausclimate_population_risk.csv",
+                mime="text/csv",
+            )
+
+        # Explainer box at the bottom
+        st.markdown(f"""
+        <div style="background:{T['bg_card']};
+                    border:1px solid {T['border']};
+                    border-radius:8px; padding:18px 20px;
+                    margin-top:16px;">
+            <div style="font-size:12px; font-weight:700;
+                        color:{T['text_primary']}; margin-bottom:10px;">
+                How the scores are calculated
+            </div>
+            <div style="font-size:11px; color:{T['text_secondary']};
+                        line-height:2.0;">
+                <b style="color:{T['text_primary']};">
+                    Population Score (0-100)
+                </b>
+                - normalised count of people living in the nearest
+                SA2 region. 100 = largest population. 0 = smallest.<br>
+                <b style="color:{T['text_primary']};">
+                    SEIFA Score
+                </b>
+                - national average is 1000. Below 1000 = more
+                disadvantaged. Above 1000 = less disadvantaged.<br>
+                <b style="color:{T['text_primary']};">
+                    Population Risk Score (0-100)
+                </b>
+                - 60% climate vulnerability index + 40% population
+                exposure. Higher = more urgent action needed.<br>
+                <b style="color:{T['text_primary']};">
+                    Sources
+                </b>
+                - ABS Estimated Resident Population 2022 by SA2 |
+                ABS SEIFA 2021 IRSD | data.api.abs.gov.au | CC-BY 4.0
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 9 -- FORECAST
+# ─────────────────────────────────────────────────────────────────────────────
+if selected_view == "Forecast":
+    st.subheader("24-Hour Forecast")
+
+    df_forecast = pd.DataFrame()
+    if os.path.exists(FORECAST_OUTPUT_PATH):
+        try:
+            df_forecast = pd.read_parquet(FORECAST_OUTPUT_PATH)
+        except Exception:
+            pass
+
+    if df_forecast.empty:
+        st.info("Forecast data not available yet. Run the pipeline to generate it.")
+    else:
+        station_names = sorted(df_forecast["station_name"].unique().tolist())
+        fc_station = st.selectbox("Station", options=station_names, key="forecast_station")
+
+        weather_tab, fire_tab, flood_tab, heat_tab = st.tabs(
+            ["Weather Forecast", "Bushfire Risk", "Flood Risk", "Heatwave Risk"]
+        )
+
+        with weather_tab:
+            fc_variable = st.selectbox(
+                "Variable",
+                options=["temperature_c", "humidity_pct", "wind_speed_kmh"],
+                format_func=lambda v: {
+                    "temperature_c": "Temperature (C)",
+                    "humidity_pct": "Humidity (%)",
+                    "wind_speed_kmh": "Wind Speed (km/h)",
+                }[v],
+                key="forecast_variable",
+            )
+
+            station_fc = df_forecast[
+                (df_forecast["station_name"] == fc_station)
+                & (df_forecast["variable"] == fc_variable)
+            ].sort_values("forecast_datetime")
+
+            if station_fc.empty:
+                st.warning("No forecast available for this station and variable.")
+            else:
+                breaches = station_fc[station_fc["risk_flag"] != "normal"]
+                if not breaches.empty:
+                    first_breach = breaches.iloc[0]
+                    direction = "exceed" if first_breach["risk_flag"] == "high" else "fall below"
+                    st.warning(
+                        f"{fc_variable.replace('_', ' ').title()} is forecast to {direction} "
+                        f"the risk threshold at {fc_station} by "
+                        f"{pd.Timestamp(first_breach['forecast_datetime']).strftime('%A %I:%M %p')}."
+                    )
+
+                history = df[df["station_name"] == fc_station][["timestamp", fc_variable]].dropna() \
+                    if fc_variable in df.columns and "timestamp" in df.columns else pd.DataFrame()
+                if not history.empty:
+                    history["timestamp"] = pd.to_datetime(history["timestamp"], errors="coerce")
+                    history = history.sort_values("timestamp").tail(48)
+
+                fig = go.Figure()
+
+                if not history.empty:
+                    fig.add_trace(go.Scatter(
+                        x=history["timestamp"], y=history[fc_variable],
+                        mode="lines", name="Observed",
+                        line=dict(color=T["accent"]),
+                    ))
+
+                fig.add_trace(go.Scatter(
+                    x=station_fc["forecast_datetime"], y=station_fc["predicted_value"],
+                    mode="lines", name="Forecast",
+                    line=dict(color=T["accent_light"], dash="dash"),
+                ))
+
+                fig.add_trace(go.Scatter(
+                    x=pd.concat([station_fc["forecast_datetime"], station_fc["forecast_datetime"][::-1]]),
+                    y=pd.concat([station_fc["upper_bound"], station_fc["lower_bound"][::-1]]),
+                    fill="toself",
+                    fillcolor=hex_to_rgba(T['accent'], 0.15),
+                    line=dict(color="rgba(255,255,255,0)"),
+                    name="80% confidence interval",
+                ))
+
+                fig = chart_layout(fig, title=f"{fc_station} - {fc_variable.replace('_',' ').title()}",
+                                   height=420, legend=True)
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.dataframe(
+                    station_fc[["forecast_datetime", "predicted_value", "lower_bound", "upper_bound", "risk_flag"]],
+                    use_container_width=True, hide_index=True,
+                )
+
+        hazards = get_station_hazards(fc_station, df_bom_history, df_forecast)
+
+        with fire_tab:
+            if not hazards["available"]:
+                st.info(hazards["reason"])
+            else:
+                st.caption(
+                    "Estimates how easily a fire could start and spread here, "
+                    "based on forecast heat, humidity and wind, combined with "
+                    "how dry the vegetation already is."
+                )
+
+                h1, h2, h3 = st.columns(3)
+                h1.metric(
+                    "Dryness Score (today)", f"{hazards['today_drought_factor']:.1f} / 10",
+                    help="How dry the vegetation and fuel already are, on a "
+                         "0-10 scale. Higher means drier and more ready to "
+                         "burn. This is the 'Drought Factor' in the official "
+                         "fire danger formula."
+                )
+                h2.metric(
+                    "Dryness Score (forecast)", f"{hazards['forecast_drought_factor']:.1f} / 10",
+                    help="The same dryness score, projected forward using "
+                         "tomorrow's forecast temperature and rainfall."
+                )
+                h3.metric(
+                    "Soil Dryness (KBDI)", f"{hazards['today_kbdi']:.0f} / 203",
+                    help="Keetch-Byram Drought Index - a longer-running "
+                         "0-203 soil moisture scale. 0 means recently "
+                         "soaked, 203 is as dry as the scale goes. The "
+                         "dryness score above is partly built from this."
+                )
+
+                ffdi_hourly = hazards["ffdi_hourly"]
+                peak = ffdi_hourly.loc[ffdi_hourly["ffdi"].idxmax()]
+
+                if peak["ffdi_rating"] == "Low-Moderate":
+                    st.success(
+                        f"Fire danger stays Low-Moderate across the forecast "
+                        f"window (peak score {peak['ffdi']:.0f})."
+                    )
+                else:
+                    st.warning(
+                        f"Peak forecast fire danger: {peak['ffdi']:.0f} "
+                        f"({peak['ffdi_rating']}) at "
+                        f"{pd.Timestamp(peak['forecast_datetime']).strftime('%A %I:%M %p')}."
+                    )
+
+                fig = go.Figure()
+                fig.add_hrect(y0=0, y1=24, fillcolor=T["success"], opacity=0.08, line_width=0)
+                fig.add_hrect(y0=24, y1=74, fillcolor=T["warning"], opacity=0.08, line_width=0)
+                fig.add_hrect(y0=74, y1=max(140, float(ffdi_hourly["ffdi"].max()) + 20),
+                              fillcolor=T["critical"], opacity=0.08, line_width=0)
+                fig.add_trace(go.Scatter(
+                    x=ffdi_hourly["forecast_datetime"], y=ffdi_hourly["ffdi"],
+                    mode="lines+markers", name="Fire Danger Index",
+                    line=dict(color=T["critical"]),
+                ))
+                fig = chart_layout(fig, title=f"{fc_station} - Fire Danger Forecast",
+                                   height=360, legend=False)
+                fig.update_yaxes(title_text="Fire Danger Index", rangemode="tozero")
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.dataframe(
+                    ffdi_hourly[["forecast_datetime", "temperature_c", "humidity_pct",
+                                 "wind_speed_kmh", "ffdi", "ffdi_rating"]],
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "forecast_datetime": st.column_config.DatetimeColumn("Time", format="ddd, h a"),
+                        "temperature_c": st.column_config.NumberColumn("Temp (C)", format="%.1f"),
+                        "humidity_pct": st.column_config.NumberColumn("Humidity (%)", format="%.0f"),
+                        "wind_speed_kmh": st.column_config.NumberColumn("Wind (km/h)", format="%.0f"),
+                        "ffdi": st.column_config.NumberColumn("Fire Danger Index", format="%.0f"),
+                        "ffdi_rating": st.column_config.TextColumn("Rating"),
+                    },
+                )
+
+                with st.expander("What do these terms mean?"):
+                    st.markdown(
+                        "- **Fire Danger Index (FFDI)** - the official "
+                        "Australian fire danger score. Combines heat, "
+                        "humidity, wind and dryness into one number.\n"
+                        "- **Dryness Score / Drought Factor** - a 0-10 "
+                        "score for how primed the vegetation is to burn, "
+                        "based on recent rainfall and heat.\n"
+                        "- **KBDI** - Keetch-Byram Drought Index, a "
+                        "longer-term 0-203 soil moisture scale that the "
+                        "dryness score is partly built from.\n\n"
+                        "**Rating bands**, in increasing order of danger: "
+                        "Low-Moderate, High, Very High, Severe, Extreme, "
+                        "Catastrophic, matching the official Australian "
+                        "Fire Danger Rating System."
+                    )
+
+        with flood_tab:
+            if not hazards["available"]:
+                st.info(hazards["reason"])
+            elif not hazards["rainfall_forecast_available"]:
+                st.info(
+                    "Rainfall isn't being forecast yet. Add `rainfall_mm` to "
+                    "FORECAST_VARIABLES in forecasting/forecaster.py and rerun "
+                    "the pipeline to enable flood risk."
+                )
+            else:
+                st.caption(
+                    "A localised heavy-rainfall indicator, not an official "
+                    "flood forecast. Combines forecast rainfall with how "
+                    "saturated the ground already is."
+                )
+
+                flood_hourly = hazards["flood_hourly"]
+                peak = flood_hourly.loc[flood_hourly["flood_score"].idxmax()]
+
+                c1, c2 = st.columns(2)
+                c1.metric(
+                    "Peak Risk Score", f"{peak['flood_score']:.1f} / 10",
+                    help="A 0-10 indicative score combining forecast "
+                         "rainfall intensity with how saturated the ground "
+                         "already is."
+                )
+                c2.metric("Peak Risk Rating", peak["flood_rating"])
+
+                if peak["flood_rating"] == "Low":
+                    st.success("Flash flood risk stays Low across the forecast window.")
+                else:
+                    st.warning(
+                        f"Peak flash flood risk: {peak['flood_rating']} at "
+                        f"{pd.Timestamp(peak['forecast_datetime']).strftime('%A %I:%M %p')}, "
+                        f"{peak['rainfall_mm']:.0f}mm forecast that hour."
+                    )
+
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    x=flood_hourly["forecast_datetime"], y=flood_hourly["rainfall_mm"],
+                    name="Forecast rainfall (mm)", marker_color=T["accent"],
+                ))
+                fig = chart_layout(fig, title=f"{fc_station} - Forecast Rainfall",
+                                   height=300, legend=False)
+                fig.update_yaxes(title_text="Rainfall (mm)")
+                st.plotly_chart(fig, use_container_width=True)
+
+                fig2 = go.Figure()
+                fig2.add_hrect(y0=0, y1=2.5, fillcolor=T["success"], opacity=0.08, line_width=0)
+                fig2.add_hrect(y0=2.5, y1=7.5, fillcolor=T["warning"], opacity=0.08, line_width=0)
+                fig2.add_hrect(y0=7.5, y1=10, fillcolor=T["critical"], opacity=0.08, line_width=0)
+                fig2.add_trace(go.Scatter(
+                    x=flood_hourly["forecast_datetime"], y=flood_hourly["flood_score"],
+                    mode="lines+markers", name="Risk Score",
+                    line=dict(color=T["accent_light"]),
+                ))
+                fig2 = chart_layout(fig2, title=f"{fc_station} - Flash Flood Risk Score",
+                                    height=300, legend=False)
+                fig2.update_yaxes(title_text="Risk Score (0-10)", range=[0, 10])
+                st.plotly_chart(fig2, use_container_width=True)
+
+                st.dataframe(
+                    flood_hourly[["forecast_datetime", "rainfall_mm", "flood_score", "flood_rating"]],
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "forecast_datetime": st.column_config.DatetimeColumn("Time", format="ddd, h a"),
+                        "rainfall_mm": st.column_config.NumberColumn("Rainfall (mm)", format="%.1f"),
+                        "flood_score": st.column_config.NumberColumn("Risk Score", format="%.1f"),
+                        "flood_rating": st.column_config.TextColumn("Rating"),
+                    },
+                )
+
+                with st.expander("What do these terms mean?"):
+                    st.markdown(
+                        "- **Risk Score** - a 0-10 indicative score, not an "
+                        "official flood warning. Built from how much rain is "
+                        "forecast and how saturated the ground already is.\n"
+                        "- Real flood forecasting needs catchment and "
+                        "river-level data this dashboard doesn't have. "
+                        "Treat this as an early, localised heads-up rather "
+                        "than a flood warning."
+                    )
+
+        with heat_tab:
+            if not hazards["available"]:
+                st.info(hazards["reason"])
+            else:
+                st.caption(
+                    "Compares the forecast temperature against what's normal "
+                    "and what's extreme for this specific station, rather "
+                    "than a fixed number that would mean something different "
+                    "in every town."
+                )
+
+                h1, h2, h3 = st.columns(3)
+                h1.metric(
+                    "Heat Risk Score", f"{hazards['ehf']:.1f}",
+                    help="The Excess Heat Factor. Above 0 means the forecast "
+                         "is hotter than this station's recent average; the "
+                         "higher above 0, the more intense the heat event."
+                )
+                h2.metric(
+                    "Forecast Avg Temp", f"{hazards['forecast_temp_mean']:.1f} C",
+                    help="The average temperature across the next 24 hours "
+                         "of forecast."
+                )
+                h3.metric(
+                    "Extreme Heat Threshold", f"{hazards['t95']:.1f} C",
+                    help="This station's own historical extreme: only 5% of "
+                         "days in its recorded history have been hotter "
+                         "than this."
+                )
+
+                if hazards["ehf_rating"] == "No Heatwave":
+                    st.success(f"No heatwave signal for the forecast window ({hazards['ehf_rating']}).")
+                else:
+                    st.warning(f"{hazards['ehf_rating']} forecast for this station.")
+
+                comp_fig = go.Figure()
+                comp_fig.add_trace(go.Bar(
+                    x=["Last 30 Days Avg", "Forecast Avg", "Extreme Threshold"],
+                    y=[hazards["t30_avg"], hazards["forecast_temp_mean"], hazards["t95"]],
+                    marker_color=[T["accent"], T["warning"], T["critical"]],
+                    text=[f"{v:.1f} C" for v in
+                          [hazards["t30_avg"], hazards["forecast_temp_mean"], hazards["t95"]]],
+                    textposition="outside",
+                ))
+                comp_fig = chart_layout(comp_fig, title=f"{fc_station} - Forecast vs Normal vs Extreme",
+                                        height=320, legend=False)
+                comp_fig.update_yaxes(title_text="Temperature (C)")
+                st.plotly_chart(comp_fig, use_container_width=True)
+
+                daily_recent = hazards["daily_recent"]
+                trend_fig = go.Figure()
+                trend_fig.add_trace(go.Scatter(
+                    x=daily_recent["date"], y=daily_recent["temp_mean"],
+                    mode="lines", name="Daily avg temp",
+                    line=dict(color=T["accent"]),
+                ))
+                trend_fig.add_hline(y=hazards["t95"], line_dash="dash", line_color=T["critical"],
+                                    annotation_text="Extreme threshold", annotation_position="top left")
+                trend_fig.add_hline(y=hazards["forecast_temp_mean"], line_dash="dot", line_color=T["warning"],
+                                    annotation_text="Forecast avg", annotation_position="bottom left")
+                trend_fig = chart_layout(trend_fig, title=f"{fc_station} - Recent Daily Temperatures",
+                                         height=320, legend=False)
+                trend_fig.update_yaxes(title_text="Temperature (C)")
+                st.plotly_chart(trend_fig, use_container_width=True)
+
+                with st.expander("What do these ratings mean?"):
+                    st.markdown(
+                        "- **No Heatwave** - forecast is within the normal "
+                        "range for this station.\n"
+                        "- **Low-Intensity Heatwave** - unusually warm; "
+                        "minor risk, mainly for vulnerable groups.\n"
+                        "- **Severe Heatwave** - significantly hotter than "
+                        "normal; health risk increases for most people.\n"
+                        "- **Extreme Heatwave** - rare, dangerous heat for "
+                        "this location; precautions recommended for "
+                        "everyone.\n\n"
+                        "Adapted from the Excess Heat Factor (EHF), the "
+                        "method BOM and health agencies use, which is "
+                        "defined as a period average rather than an hourly "
+                        "reading, so this is one assessment for the whole "
+                        "24-hour forecast window."
+                    )
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
-st.caption(
-    "Data source: Bureau of Meteorology Live JSON API  |  "
-    "Updated every 30 minutes  |  "
-    "AusClimate Capstone Project — University of Technology Sydney 2026"
-)
+cl, cr = st.columns([3, 1])
+with cl:
+    st.caption(
+        "Data: Bureau of Meteorology Live JSON API | "
+        "BARRA2 NCI THREDDS (BOM) | "
+        "AEMO NEMWeb | "
+        "AusClimate - University of Technology Sydney 2026"
+    )
+with cr:
+    st.caption(f"Loaded: {datetime.now().strftime('%H:%M:%S')}")
+render_floating_assistant()
