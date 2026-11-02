@@ -1,9 +1,9 @@
 requests==2.34.2
 pandas==3.1.0
 numpy==2.5.4
-pyarrow==26.0.0
+pyarrow==24.0.0
 fastparquet==2026.9.0
-streamlit==1.66.1
+streamlit==1.61.1
 plotly==7.1.0
 python-dotenv==1.2.4
 xarray==2026.9.0
