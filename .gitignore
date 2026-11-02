@@ -227,9 +227,7 @@ venv/
 
 # Data files
 data/raw/
-*.parquet
-*.csv
-*.nc
+
 
 # API keys
 .cdsapirc
