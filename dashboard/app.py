@@ -669,9 +669,12 @@ p, span, label, div {{
     box-shadow: 0 4px 12px {T["accent"]}40;
     overflow: hidden;
 }}
+.aus-header-icon {{
+    overflow: hidden;
+}}
 .aus-header-icon img {{
-    width: 150%;
-    height: 150%;
+    width: 100%;
+    height: 100%;
     object-fit: cover;
 }}
 .aus-header-title {{
@@ -2151,7 +2154,7 @@ with st.sidebar:
 # ── Operational header ────────────────────────────────────────────────────────
 
 
-now_str = datetime.now().strftime("%d %b %Y  %H:%M AEST")
+now_str = datetime.now(ZoneInfo("Australia/Sydney")).strftime("%d %b %Y  %H:%M %Z")
 
 st.markdown(f"""
 <div class="aus-header">
@@ -5150,5 +5153,5 @@ with cl:
         "AusClimate - University of Technology Sydney 2026"
     )
 with cr:
-    st.caption(f"Loaded: {datetime.now().strftime('%H:%M:%S')}")
+    st.caption(f"Loaded: {datetime.now(ZoneInfo('Australia/Sydney')).strftime('%H:%M:%S')}")
 render_floating_assistant()
