@@ -1001,7 +1001,7 @@ def map_layout(fig,
     )
 
     fig.update_layout(
-        mapbox=dict(
+        map=dict(
             style="open-street-map",
             center=dict(lat=center_lat, lon=center_lon),
             zoom=zoom,
@@ -2691,7 +2691,7 @@ if selected_view == "Station Map":
         )
         map_colour_col = map_col_opts[map_colour_label]
 
-        fig_map = px.scatter_mapbox(
+        fig_map = px.scatter_map(
             map_df,
             lat="latitude", lon="longitude",
             color=map_colour_col,
@@ -2705,7 +2705,7 @@ if selected_view == "Station Map":
                 "latitude":      False,
                 "longitude":     False,
             },
-            mapbox_style=T["mapbox_style"],
+            map_style=T["mapbox_style"],
             zoom=3.5,
             center={"lat": -26, "lon": 134},
             height=560,
@@ -2912,7 +2912,7 @@ if selected_view == "Anomalies":
                     subset=["latitude", "longitude"]
                 )
                 if not map_risk.empty:
-                    fig_risk = px.scatter_mapbox(
+                    fig_risk = px.scatter_map(
                         map_risk,
                         lat="latitude", lon="longitude",
                         color="station_risk",
@@ -3476,7 +3476,7 @@ if selected_view == "Anomalies":
                         .dropna(subset=["latitude", "longitude"])
                     )
                     if not ens_map.empty:
-                        fig_ens_map = px.scatter_mapbox(
+                        fig_ens_map = px.scatter_map(
                             ens_map,
                             lat="latitude", lon="longitude",
                             color="ml_anomaly_score",
@@ -4062,7 +4062,7 @@ if selected_view == "Clustering":
                     ).round(1)
                     hover_data[col] = ":.1f"
 
-            fig_cl_map = px.scatter_mapbox(
+            fig_cl_map = px.scatter_map(
                 map_df_c,
                 lat="latitude",
                 lon="longitude",
@@ -4518,7 +4518,7 @@ if selected_view == "Population Risk":
                 if opt_col in map_data.columns:
                     hover[opt_col] = True
 
-            fig_map = px.scatter_mapbox(
+            fig_map = px.scatter_map(
                 map_data,
                 lat="_lat", lon="_lon",
                 color=colour_col,
