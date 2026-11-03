@@ -210,6 +210,55 @@ header {{ visibility: hidden; }}
     display: none !important;
 }}
 
+/* Custom sidebar toggle */
+@media (max-width: 768px) {{
+    section[data-testid="stSidebar"] {{
+        display: none;
+    }}
+}}
+body.ac-sidebar-shown section[data-testid="stSidebar"] {{
+    display: block !important;
+}}
+body.ac-sidebar-hidden section[data-testid="stSidebar"] {{
+    display: none !important;
+}}
+
+#ac-sidebar-toggle {{
+    position: fixed;
+    top: 14px;
+    left: 14px;
+    z-index: 1000000;
+    width: 42px;
+    height: 42px;
+    border-radius: 10px;
+    background-color: {T["accent"]};
+    border: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+    transition: left 0.25s ease;
+    color: #ffffff;
+}}
+#ac-sidebar-toggle svg {{
+    width: 20px;
+    height: 20px;
+}}
+body.ac-sidebar-shown #ac-sidebar-toggle {{
+    left: 310px;
+}}
+@media (max-width: 768px) {{
+    #ac-sidebar-toggle {{
+        left: auto;
+        right: 14px;
+    }}
+    body.ac-sidebar-shown #ac-sidebar-toggle {{
+        left: auto;
+        right: 14px;
+    }}
+}}
+
 
 
 /* ── App background ─────────────────────────────────────────── */
@@ -1668,6 +1717,64 @@ def render_floating_assistant():
     """.replace("__IS_OPEN__", "true" if is_open else "false")
 
     st.components.v1.html(drag_script, height=0)
+    
+    st.components.v1.html("""
+    <script>
+    (function() {
+        var OPEN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>';
+        var CLOSE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>';
+
+        function updateIcon(doc, btn) {
+            var open = doc.body.classList.contains('ac-sidebar-shown');
+            btn.innerHTML = open ? CLOSE_SVG : OPEN_SVG;
+        }
+
+        function setup() {
+            try {
+                var doc = window.parent.document;
+                var sidebar = doc.querySelector('section[data-testid="stSidebar"]');
+                if (!sidebar) return;
+
+                if (!doc.body.classList.contains('ac-sidebar-shown') && !doc.body.classList.contains('ac-sidebar-hidden')) {
+                    if (window.parent.innerWidth <= 768) {
+                        doc.body.classList.add('ac-sidebar-hidden');
+                    } else {
+                        doc.body.classList.add('ac-sidebar-shown');
+                    }
+                }
+
+                var btn = doc.getElementById('ac-sidebar-toggle');
+                if (!btn) {
+                    btn = doc.createElement('button');
+                    btn.id = 'ac-sidebar-toggle';
+                    btn.type = 'button';
+                    btn.setAttribute('aria-label', 'Toggle sidebar');
+                    doc.body.appendChild(btn);
+                    btn.addEventListener('click', function() {
+                        if (doc.body.classList.contains('ac-sidebar-shown')) {
+                            doc.body.classList.remove('ac-sidebar-shown');
+                            doc.body.classList.add('ac-sidebar-hidden');
+                        } else {
+                            doc.body.classList.remove('ac-sidebar-hidden');
+                            doc.body.classList.add('ac-sidebar-shown');
+                        }
+                        updateIcon(doc, btn);
+                    });
+                }
+                updateIcon(doc, btn);
+            } catch (e) {}
+        }
+
+        setup();
+        var attempts = 0;
+        var interval = setInterval(function() {
+            attempts++;
+            setup();
+            if (attempts > 15) clearInterval(interval);
+        }, 300);
+    })();
+    </script>
+    """, height=0)
     
     
 
