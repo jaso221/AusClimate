@@ -122,40 +122,36 @@ STAKEHOLDER_MODES = {
         "icon":    "",
         "desc":    "Heat stress monitoring, station vulnerability, risk mapping",
         "primary": "Station Map",
-        "tabs":    ["Station Map", "Anomalies", "Data Table", "Population Risk",
-                    "BARRA2 Comparison", "Energy",  "Clustering", "Overview"],
+        "tabs":    ["Station Map", "Overview", "Population Risk", "Anomalies", "Forecast"],
     },
     "emergency":  {
         "label":   "Emergency Services",
         "icon":    "",
         "desc":    "Live risk flags, compound anomalies, energy-climate alerts",
         "primary": "Anomalies",
-        "tabs":    ["Anomalies", "Population Risk", "Energy", "Station Map", "Overview",
-                    "BARRA2 Comparison", "Data Table",  "Clustering"],
-    }, 
+        "tabs":    ["Overview", "Anomalies", "Forecast", "Energy", "Population Risk", "Station Map"],
+    },
     "government": {
         "label":   "Government Agency",
         "icon":    "",
         "desc":    "Historical baselines, policy data, exports and reporting",
         "primary": "BARRA2 Comparison",
-        "tabs":    ["BARRA2 Comparison", "Data Table", "Population Risk","Anomalies",  "Clustering",
-                    "Overview", "Station Map", "Energy"],
+        "tabs":    ["BARRA2 Comparison", "Data Table", "Population Risk", "Clustering", "Overview"],
     },
     "researcher": {
         "label":   "Researcher",
         "icon":    "",
         "desc":    "SHAP attribution, BARRA2 reanalysis, full data access",
         "primary": "BARRA2 Comparison",
-        "tabs":    ["BARRA2 Comparison", "Anomalies",  "Clustering", "Population Risk", "Data Table",
-                    "Station Map", "Overview", "Energy"],
+        "tabs":    ["BARRA2 Comparison", "Anomalies", "Clustering", "Data Table", "Forecast", "Population Risk"],
     },
     "all":        {
         "label":   "Full Platform",
         "icon":    "",
         "desc":    "All features and all tabs",
         "primary": "Overview",
-        "tabs":    ["Overview", "Station Map", "Anomalies",
-                    "BARRA2 Comparison", "Data Table", "Energy", "Clustering", "Population Risk"],
+        "tabs":    ["Overview", "Station Map", "Anomalies", "BARRA2 Comparison",
+                    "Data Table", "Energy", "Clustering", "Population Risk", "Forecast"],
     },
 } 
 
@@ -2003,9 +1999,6 @@ ALL_TAB_NAMES = [
 ]
 
 ordered_tabs = MODE_INFO.get("tabs", ALL_TAB_NAMES)
-for t in ALL_TAB_NAMES:
-    if t not in ordered_tabs:
-        ordered_tabs.append(t)
 
 @st.cache_data
 def load_logo_b64() -> str:
