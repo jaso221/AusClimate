@@ -311,11 +311,25 @@ def run_shap_analysis(df: pd.DataFrame,
         try:
             shap_df   = pd.read_parquet(SHAP_RESULTS_PATH)
             shap_cols = [c for c in shap_df.columns if c.startswith("shap_")]
-            if shap_cols:
+            # Only trust the cache when it still lines up with the current
+            # data. The cache has no join key (saved with index=False), so
+            # reusing it by raw row position silently misaligns or drops
+            # SHAP values the moment the live dataset grows, which happens
+            # on effectively every scheduled refresh. A row count match is
+            # a cheap, reliable enough guard: this dataset only grows or
+            # gets rebuilt, it never coincidentally shrinks to the same size.
+            if shap_cols and len(shap_df) == len(df):
                 print(f"  SHAP: loaded {len(shap_cols)} cached columns.")
                 for col in shap_cols:
-                    df[col] = shap_df[col].reindex(df.index)
+                    df[col] = shap_df[col].values
                 return df
+            elif shap_cols:
+                print(
+                    f"  SHAP: cache has {len(shap_df):,} rows, current data "
+                    f"has {len(df):,}. Data has moved on since the cache "
+                    f"was built, recomputing instead of reusing a stale, "
+                    f"misaligned cache."
+                )
         except Exception as e:
             print(f"  SHAP: cache load failed ({e}), recomputing.")
 
