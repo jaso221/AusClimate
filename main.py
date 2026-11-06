@@ -256,19 +256,31 @@ def run_pipeline(force_refresh: bool = False,
         from config import FORECAST_OUTPUT_PATH
         from datetime import datetime
 
+        # File mtime is unusable here: actions/checkout resets every file's
+        # mtime to "now" on every CI run, so an mtime-based age check always
+        # reads ~0.0h old and the forecast cache never actually expires.
+        # Store the real generation time as file content instead, which
+        # survives a git commit/checkout correctly.
+        FORECAST_META_PATH = FORECAST_OUTPUT_PATH.replace(".parquet", "_generated_at.txt")
+
         should_run = True
-        if os.path.exists(FORECAST_OUTPUT_PATH) and not force_refresh:
-            age_hours = (datetime.now() - datetime.fromtimestamp(
-                os.path.getmtime(FORECAST_OUTPUT_PATH)
-            )).total_seconds() / 3600
-            if age_hours < FORECAST_CACHE_HOURS:
-                should_run = False
-                print(f"  Forecast cache is {age_hours:.1f}h old, skipping (refreshes every {FORECAST_CACHE_HOURS}h)")
+        if os.path.exists(FORECAST_META_PATH) and not force_refresh:
+            try:
+                with open(FORECAST_META_PATH) as f:
+                    generated_at = datetime.fromisoformat(f.read().strip())
+                age_hours = (datetime.now() - generated_at).total_seconds() / 3600
+                if age_hours < FORECAST_CACHE_HOURS:
+                    should_run = False
+                    print(f"  Forecast cache is {age_hours:.1f}h old, skipping (refreshes every {FORECAST_CACHE_HOURS}h)")
+            except Exception:
+                pass  # missing/malformed meta file, just recompute
 
         if should_run:
             df_forecast = run_forecasting()
             if not df_forecast.empty:
                 print(f"  Forecasted {df_forecast['station_name'].nunique()} stations")
+                with open(FORECAST_META_PATH, "w") as f:
+                    f.write(datetime.now().isoformat())
             else:
                 print("  No forecasts produced yet -- needs more accumulated BOM history.")
     except Exception as e:
